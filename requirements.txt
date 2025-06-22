@@ -1,3 +1,4 @@
 pandas
 PyMuPDF
-python-magic-bin
+#python-magic-bin for winrdows only
+python-magic
