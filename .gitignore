@@ -6,6 +6,20 @@ __pycache__/
 # C extensions
 *.so
 
+# Virtual Environment
+venv/
+
+# Database file
+*.sqlite
+*.sqlite3
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+
+
+
 # Distribution / packaging
 .Python
 build/
@@ -192,3 +206,9 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+
+# It is recommended to add your LIBRARY_ROOT path here
+# to prevent accidentally committing your entire merged library.
+# For example, if your LIBRARY_ROOT is /path/to/your/new_unified_library, add:
+# /path/to/your/new_unified_library/
