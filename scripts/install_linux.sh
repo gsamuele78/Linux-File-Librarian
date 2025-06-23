@@ -24,8 +24,10 @@ deactivate
 
 # --- 4. Make Scripts Executable ---
 echo "[INFO] Setting execution permissions for run scripts..."
-chmod +x scripts/run_librarian.sh
-chmod +x scripts/run_search_gui.sh
+#chmod +x scripts/run_librarian.sh
+#chmod +x scripts/run_search_gui.sh
+chmod +x scripts/*.sh
+
 
 echo ""
 echo "--- Installation Complete! ---"
