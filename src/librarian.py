@@ -10,15 +10,18 @@ from pathlib import Path
 import warnings
 import re
 
+from config_loader import load_config # <-- Add this import
+import sys # <-- Add this import
+
 # --- CONFIGURATION ---
-SOURCE_PATHS = [
-    "/path/to/your/first/library",
-    "/path/to/your/second/library"
-]
-LIBRARY_ROOT = "/path/to/your/new_unified_library"
-MIN_PDF_SIZE_BYTES = 10 * 1024
-DB_FILE = "library_index.sqlite"
-KNOWLEDGE_DB_FILE = "knowledge.sqlite"
+#SOURCE_PATHS = [
+#    "/path/to/your/first/library",
+#    "/path/to/your/second/library"
+#]
+#LIBRARY_ROOT = "/path/to/your/new_unified_library"
+#MIN_PDF_SIZE_BYTES = 10 * 1024
+#DB_FILE = "library_index.sqlite"
+#KNOWLEDGE_DB_FILE = "knowledge.sqlite"
 
 # --- CLASSIFIER ENGINE ---
 class Classifier:
@@ -147,7 +150,14 @@ def get_pdf_details(file_path):
     return is_valid, has_text
 
 # --- MAIN SCRIPT LOGIC ---
-def build_library():
+def build_library(config):
+    # Get settings from the passed config object
+    SOURCE_PATHS = config['source_paths']
+    LIBRARY_ROOT = config['library_root']
+    MIN_PDF_SIZE_BYTES = config['min_pdf_size_bytes']
+    DB_FILE = "library_index.sqlite"
+    KNOWLEDGE_DB_FILE = "knowledge.sqlite"
+
     print("--- Starting Library Build Process ---")
     os.makedirs(LIBRARY_ROOT, exist_ok=True)
     
@@ -254,6 +264,23 @@ def build_library():
     print(f"New library location: {LIBRARY_ROOT}")
 
 if __name__ == '__main__':
+    try:
+        config = load_config()
+        if not config['source_paths'] or "/path/to/" in config['source_paths'][0]:
+             print("[FATAL] Configuration Error: 'source_paths' is not set in conf/config.ini.")
+             exit(1)
+        if not config['library_root'] or "/path/to/" in config['library_root']:
+             print("[FATAL] Configuration Error: 'library_root' is not set in conf/config.ini.")
+             exit(1)
+        
+        build_library(config)
+
+    except FileNotFoundError as e:
+        print(f"[FATAL] A required file was not found. Please check your setup. Error: {e}")
+        exit(1)
+    except Exception as e:
+        print(f"[FATAL] An unexpected error occurred: {e}")
+        exit(1)
     if "/path/to/" in LIBRARY_ROOT or "/path/to/" in SOURCE_PATHS[0]:
         print("ERROR: Please configure the SOURCE_PATHS and LIBRARY_ROOT variables in 'src/librarian.py' before running.")
     else:
