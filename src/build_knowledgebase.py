@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import re
 import os
 import time
+from config_loader import load_config # <-- Add this import
 
 # --- Configuration ---
 # The name of the database file that will be created in the project root.
@@ -239,18 +240,46 @@ def parse_wikipedia_pathfinder(conn):
     print(f"[SUCCESS] Wikipedia (Pathfinder) parsing complete. Added {total_added} entries.")
 
 
+# --- Parser Mapping ---
+# This dictionary maps the key from config.ini to the actual parser function.
+# To add a new site, add its key-value pair here and a new URL entry in config.ini.
+PARSER_MAPPING = {
+    "tsr_archive": parse_tsr_archive,
+    "wiki_dnd_modules": lambda conn, url: parse_wikipedia_dnd(conn, url, "D&D Modules"),
+    "wiki_dnd_adventures": lambda conn, url: parse_wikipedia_dnd(conn, url, "D&D Adventures"),
+    "dndwiki_35e": parse_dndwiki_35e,
+    "wiki_pathfinder": parse_wikipedia_pathfinder
+}
+
 if __name__ == "__main__":
     print("--- Building Knowledge Base from Online Sources ---")
-    print("This may take several minutes. Please be patient.")
+    
+    try:
+        config = load_config()
+        urls_to_scrape = config['knowledge_base_urls']
+        print(f"[INFO] Loaded {len(urls_to_scrape)} URLs from config.ini")
+    except Exception as e:
+        print(f"[FATAL] Could not load configuration. Error: {e}")
+        exit(1)
+        
     connection = init_db()
     
-    # --- Execute all parsers ---
-    parse_tsr_archive(connection)
-    parse_wikipedia_dnd(connection, 'https://en.wikipedia.org/wiki/List_of_Dungeons_%26_Dragons_modules', "D&D Modules")
-    parse_wikipedia_dnd(connection, 'https://en.wikipedia.org/wiki/List_of_Dungeons_%26_Dragons_adventures', "D&D Adventures")
-    parse_dndwiki_35e(connection)
-    parse_wikipedia_pathfinder(connection)
-    
+    # --- Execute Parsers based on Config ---
+    for key, url in urls_to_scrape.items():
+        if key in PARSER_MAPPING:
+            # Call the appropriate parser function for this URL key
+            parser_func = PARSER_MAPPING[key]
+            # Some parsers like tsr_archive don't need the URL passed directly
+            try:
+                if key == "tsr_archive" or key == "dndwiki_35e":
+                    parser_func(connection)
+                else:
+                    parser_func(connection, url)
+            except Exception as e:
+                 print(f"  [ERROR] An unexpected error occurred in parser '{key}': {e}")
+        else:
+            print(f"  [WARNING] No parser available for config key '{key}'. Skipping.")
+
     # --- Finalize ---
     print("\n[+] Finalizing database...")
     cursor = connection.cursor()
