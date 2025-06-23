@@ -1,38 +1,39 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Ensures the project dependencies are installed correctly.
+
+# Exit immediately if a command exits with a non-zero status.
 set -e
 
 echo "--- Linux File Librarian Installer ---"
 
-# --- 1. Install System Dependencies ---
-echo "[INFO] Updating package lists and installing system dependencies (python3-pip, python3-tk, python3-venv, libmagic1)..."
+echo "[INFO] Updating package lists and installing system dependencies..."
+# The user will be prompted for their password here.
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-tk python3-venv git libmagic1
 
-# --- 2. Create Python Virtual Environment ---
-if [ -d "venv" ]; then
-    echo "[INFO] Virtual environment 'venv' already exists. Skipping creation."
+# Find the project root directory, which is one level up from this script.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+PROJECT_ROOT="$SCRIPT_DIR/.."
+
+VENV_PATH="$PROJECT_ROOT/venv"
+
+if [ -d "$VENV_PATH" ]; then
+    echo "[INFO] Virtual environment '$VENV_PATH' already exists. Skipping creation."
 else
-    echo "[INFO] Creating Python virtual environment in 'venv'..."
-    python3 -m venv venv
+    echo "[INFO] Creating Python virtual environment in '$VENV_PATH'..."
+    python3 -m venv "$VENV_PATH"
 fi
 
-# --- 3. Install Python Packages ---
 echo "[INFO] Activating virtual environment and installing packages from requirements.txt..."
-source venv/bin/activate
-pip install -r requirements.txt
+# We must source from the full path to activate the venv.
+# shellcheck source=/dev/null
+source "$VENV_PATH/bin/activate"
+pip install -r "$PROJECT_ROOT/requirements.txt"
 deactivate
 
-# --- 4. Make Scripts Executable ---
 echo "[INFO] Setting execution permissions for run scripts..."
-#chmod +x scripts/run_librarian.sh
-#chmod +x scripts/run_search_gui.sh
-chmod +x scripts/*.sh
-
+chmod +x "$PROJECT_ROOT/scripts/"*.sh
 
 echo ""
 echo "--- Installation Complete! ---"
-echo "Next steps:"
-echo "1. Configure your paths in 'src/librarian.py' and 'src/search_gui.py'."
-echo "2. Run '.scripts/build_knowledgebase.sh' to build your library Knoledgebase to better catalog files."
-echo "3. Run './scripts/run_librarian.sh' to build your library."
-echo "4. Run './scripts/run_search_gui.sh' to search in your new merged library."
+echo "IMPORTANT: Please edit 'conf/config.ini' with your custom paths before running."
