@@ -1,6 +1,6 @@
 pandas
 PyMuPDF
-#python-magic-bin for winrdows only
+#python-magic-bin for windows only
 python-magic
 requests
 beautifulsoup4
