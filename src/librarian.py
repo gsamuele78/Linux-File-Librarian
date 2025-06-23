@@ -39,7 +39,6 @@ class Classifier:
         cursor = self.conn.cursor()
         cursor.execute("SELECT product_code, title, game_system, edition, category FROM products")
         for code, title, system, edition, category in cursor.fetchall():
-            # Store keys in a simplified format for easier matching.
             if code: self.product_cache[re.sub(r'[^a-z0-9]', '', code.lower())] = (system, edition, category)
             if title: self.product_cache[re.sub(r'[^a-z0-9]', '', title.lower())] = (system, edition, category)
 
@@ -53,6 +52,7 @@ class Classifier:
             if edition: self.path_keywords[edition.lower().replace(" ", "")] = system
 
     def _classify_by_filename(self, filename):
+        """(Priority 1) Tries to classify based on product codes or titles in the filename."""
         clean_filename = re.sub(r'[^a-z0-9]', '', filename.lower())
         for title_key in sorted(self.product_cache.keys(), key=len, reverse=True):
             if title_key in clean_filename:
@@ -60,6 +60,7 @@ class Classifier:
         return None
 
     def _classify_by_path(self, full_path):
+        """(Priority 2) Tries to classify based on keywords found in the file's parent path."""
         if not self.path_keywords: return None
         for part in reversed(Path(full_path).parts[:-1]):
             clean_part = part.lower().replace(" ", "").replace("_", "").replace("-", "")
@@ -69,6 +70,7 @@ class Classifier:
         return None
 
     def _classify_by_mimetype(self, mime_type):
+        """(Priority 3) Classifies based on generic file type."""
         major_type = mime_type.split('/')[0]
         if major_type == 'video': return ('Media', 'Video', None)
         if major_type == 'audio': return ('Media', 'Audio', None)
@@ -81,25 +83,13 @@ class Classifier:
         return None
 
     def classify(self, filename, full_path, mime_type):
-        """
-        Runs the full classification hierarchy to find the best category for a file.
-        
-        Returns:
-            tuple: (game_system, edition, category)
-        """
-        # Priority 1: TTRPG Filename Match (Highest Accuracy)
+        """Runs the full classification hierarchy to find the best category for a file."""
         result = self._classify_by_filename(filename)
         if result: return result
-
-        # Priority 2: TTRPG Parent Path Match (Intelligent Guess)
         result = self._classify_by_path(full_path)
         if result: return result
-
-        # Priority 3: Generic Content-Type Match (Broad Categorization)
         result = self._classify_by_mimetype(mime_type)
         if result: return result
-            
-        # Priority 4: Miscellaneous (Fallback for anything not caught)
         return ('Miscellaneous', None, None)
 
     def close(self):
@@ -113,7 +103,9 @@ def get_file_hash(file_path):
             for chunk in iter(lambda: f.read(8192), b""):
                 sha256.update(chunk)
         return sha256.hexdigest()
-    except IOError: return None
+    except IOError as e:
+        print(f"  [Warning] Could not hash file {os.path.basename(file_path)}. Skipping. Reason: {e}", file=sys.stderr)
+        return None
 
 def get_pdf_details(file_path):
     is_valid, has_text = False, False
@@ -127,9 +119,10 @@ def get_pdf_details(file_path):
                         has_text = True
                         break
     except Exception:
-        # Suppress detailed error, just mark as invalid
+        # Silently fail. A PDF that can't be opened is simply marked as invalid.
         pass
     return is_valid, has_text
+
 # --- Main Logic ---
 def build_library(config):
     # --- Step 1: Configuration & Setup ---
@@ -143,11 +136,20 @@ def build_library(config):
 
     # --- Step 2: File Scanning ---
     print("Step 1: Scanning all source directories for files...")
-    all_files = [
-        {'path': str(p), 'name': p.name, 'size': p.stat().st_size}
-        for src in SOURCE_PATHS if os.path.isdir(src)
-        for p in Path(src).rglob('*') if p.is_file()
-    ]
+    all_files = []
+    for src in SOURCE_PATHS:
+        if not os.path.isdir(src):
+            print(f"[Warning] Source path not found, skipping: {src}", file=sys.stderr)
+            continue
+        # Use rglob to recursively find all files. The check for p.is_file()
+        # robustly handles broken symbolic links, which are skipped.
+        for p in Path(src).rglob('*'):
+            if p.is_file():
+                try:
+                    all_files.append({'path': str(p), 'name': p.name, 'size': p.stat().st_size})
+                except (IOError, OSError) as e:
+                    print(f"  [Warning] Could not stat file {p.name}. Skipping. Reason: {e}", file=sys.stderr)
+    
     if not all_files: print("No files found in source paths. Exiting."); return
     df = pd.DataFrame(all_files)
     print(f"Found {len(df)} total files.")
@@ -156,14 +158,29 @@ def build_library(config):
     print("Step 2: Analyzing and Classifying files (this may take a while)...")
     analysis_results = []
     for index, row in df.iterrows():
-        # (Analysis logic remains the same)
+        path = row['path']
+        try:
+            mime_type = magic.from_file(path, mime=True)
+        except magic.MagicException as e:
+            print(f"  [Warning] Could not determine MIME type for {row['name']}. Reason: {e}", file=sys.stderr)
+            mime_type = 'unknown/unknown'
+        
+        file_hash = get_file_hash(path)
+        is_pdf, has_ocr = (False, False)
+        if 'pdf' in mime_type: is_pdf, has_ocr = get_pdf_details(path)
+        system, edition, category = classifier.classify(row['name'], path, mime_type)
+        analysis_results.append({'hash': file_hash, 'mime_type': mime_type, 'is_pdf_valid': is_pdf, 'has_ocr': has_ocr, 'game_system': system, 'edition': edition, 'category': category})
         if (index + 1) % 500 == 0: print(f"  ...processed {index + 1}/{len(df)} files")
     
     df = pd.concat([df, pd.DataFrame(analysis_results)], axis=1).dropna(subset=['hash'])
 
     # --- Step 4: Deduplication & Selection ---
     print("Step 3: Deduplicating based on content and selecting best files...")
-    # (Deduplication logic remains the same)
+    df['quality_score'] = 0
+    df.loc[df['has_ocr'], 'quality_score'] += 4
+    df.loc[df['is_pdf_valid'], 'quality_score'] += 2
+    df.loc[df['size'] > MIN_PDF_SIZE_BYTES, 'quality_score'] += 1
+    df = df.sort_values(by=['quality_score', 'size'], ascending=False)
     unique_files = df.drop_duplicates(subset='hash', keep='first').copy()
     print(f"  - After content deduplication: {len(unique_files)} unique files remain.")
     unique_files['name_occurrence'] = unique_files.groupby('name').cumcount()
@@ -179,14 +196,25 @@ def build_library(config):
     for _, row in unique_files.iterrows():
         original_path = Path(row['path'])
         new_filename = f"{original_path.stem}_{row['name_occurrence']}{original_path.suffix}" if row['name_occurrence'] > 0 else original_path.name
+        
+        # Build the destination subdirectory using the classifier's output.
+        # Note that `row['category']` is used here for the folder path.
         dest_subdir = Path(row['game_system'] or 'Misc')
         if row['edition'] and pd.notna(row['edition']): dest_subdir = dest_subdir / row['edition']
         if row['category'] and pd.notna(row['category']): dest_subdir = dest_subdir / row['category']
+        
         destination_path = Path(LIBRARY_ROOT) / dest_subdir / new_filename
         os.makedirs(destination_path.parent, exist_ok=True)
         try:
             shutil.copy2(original_path, destination_path)
-            cursor.execute("INSERT INTO files (filename, path, type, size, game_system, edition) VALUES (?, ?, ?, ?, ?, ?)",(new_filename, str(destination_path), row['mime_type'], row['size'], row['game_system'], row['edition']))
+            
+            # This is the full and correct INSERT statement.
+            # As you correctly noted, `row['category']` is NOT inserted here,
+            # because the 'files' table does not have a 'category' column.
+            cursor.execute(
+                "INSERT INTO files (filename, path, type, size, game_system, edition) VALUES (?, ?, ?, ?, ?, ?)",
+                (new_filename, str(destination_path), row['mime_type'], row['size'], row['game_system'], row['edition'])
+            )
         except Exception as e:
             print(f"  [Error] Could not copy {original_path}. Reason: {e}", file=sys.stderr)
             
@@ -194,7 +222,10 @@ def build_library(config):
     conn.close()
     classifier.close()
     print(f"\n--- Library Build Complete! ---")
+    print(f"Total unique files copied: {len(unique_files)}")
+    print(f"New library location: {LIBRARY_ROOT}")
 
+# --- Main Execution Block ---
 if __name__ == '__main__':
     try:
         config = load_config()
