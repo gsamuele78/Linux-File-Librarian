@@ -4,6 +4,7 @@ from pathlib import Path
 def load_config():
     """Reads conf/config.ini and returns a structured dictionary of settings."""
     config = configparser.ConfigParser()
+    # Build a path to conf/config.ini relative to this source file
     config_path = Path(__file__).parent.parent / 'conf' / 'config.ini'
 
     if not config_path.exists():
