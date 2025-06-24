@@ -5,13 +5,14 @@ import re
 import os
 import time
 import sys
-from collections import defaultdict
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from src.config_loader import load_config
 
 # --- Configuration ---
 DB_FILE = "knowledge.sqlite"
-HEADERS = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
+USER_AGENT = 'LinuxFileLibrarianBot/1.0 (+https://github.com/yourproject)'
+
+HEADERS = {'User-Agent': USER_AGENT}
 
 def init_db():
     """Initializes a fresh database, deleting any existing one to ensure a clean build."""
@@ -33,6 +34,28 @@ def init_db():
     conn.commit()
     return conn
 
+def is_scraping_allowed(url):
+    """
+    Checks robots.txt for the given URL to determine if scraping is allowed.
+    Returns True if allowed, False otherwise.
+    """
+    try:
+        parsed = urlparse(url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        resp = requests.get(robots_url, headers=HEADERS, timeout=10)
+        if resp.status_code != 200:
+            # If robots.txt not found, assume allowed
+            return True
+        rules = resp.text.lower()
+        # Simple check: Disallow for all or for our user-agent
+        if 'disallow: /' in rules and ('user-agent: *' in rules or f'user-agent: {USER_AGENT.lower()}' in rules):
+            print(f"[WARNING] robots.txt at {robots_url} disallows scraping. Skipping {url}.", file=sys.stderr)
+            return False
+        return True
+    except Exception as e:
+        print(f"[WARNING] Could not check robots.txt for {url}: {e}", file=sys.stderr)
+        return True  # Fail open
+
 def safe_request(url, retries=3, delay=2):
     """
     Makes a web request with retries and handles network errors robustly.
@@ -42,6 +65,10 @@ def safe_request(url, retries=3, delay=2):
         try:
             response = requests.get(url, headers=HEADERS, timeout=15)
             response.raise_for_status()
+            # Defensive: check for HTML content type
+            if 'text/html' not in response.headers.get('Content-Type', ''):
+                print(f"  [ERROR] Non-HTML content at {url}", file=sys.stderr)
+                return None
             return BeautifulSoup(response.content, 'lxml')
         except requests.exceptions.RequestException as e:
             print(f"  [ERROR] Could not fetch {url} (attempt {attempt+1}/{retries}): {e}", file=sys.stderr)
@@ -213,16 +240,95 @@ def parse_dndwiki_35e(conn, url, lang):
     conn.commit()
     print(f"[SUCCESS] dnd-wiki.org parsing complete. Added {total_added} unique entries.")
 
-def parse_drivethrurpg(conn, url, system, lang):
-    """(RESTORED) This parser gracefully handles the expected 403 error from DriveThruRPG."""
-    print(f"\n[+] Parsing DriveThruRPG {system} products from {url}...")
-    print("  [INFO] DriveThruRPG actively blocks automated scripts (HTTP 403 Error).")
+def parse_rpggeek(conn, url, lang):
+    """
+    Parser for RPGGeek adventure lists (publicly accessible, allows scraping).
+    """
+    print(f"\n[+] Parsing RPGGeek from {url} (language: {lang})...")
     soup = safe_request(url)
     if not soup:
-        print(f"[SKIPPED] Could not access DriveThruRPG for {system}, as expected.")
+        print(f"  [WARNING] Could not fetch RPGGeek page: {url}", file=sys.stderr)
         return
-    print("[SUCCESS] DriveThruRPG parsing step finished (likely with an error, which is expected).")
+    cursor = conn.cursor()
+    total_added = 0
+    # Example: parse table rows for modules/adventures
+    for row in soup.select('table.geekitem_table tr'):
+        cols = row.find_all('td')
+        if len(cols) >= 2:
+            title = cols[1].get_text(strip=True)
+            if title:
+                try:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (None, title, "RPG", None, "Module/Adventure", lang, url)
+                    )
+                    total_added += 1
+                except Exception as e:
+                    print(f"    [ERROR] DB insert failed for {title}: {e}", file=sys.stderr)
+    conn.commit()
+    print(f"[SUCCESS] RPGGeek parsing complete. Added {total_added} entries.")
 
+def parse_rpgnet(conn, url, lang):
+    """
+    Parser for RPG.net lists (if available).
+    """
+    print(f"\n[+] Parsing RPG.net from {url} (language: {lang})...")
+    soup = safe_request(url)
+    if not soup:
+        print(f"  [WARNING] Could not fetch RPG.net page: {url}", file=sys.stderr)
+        return
+    cursor = conn.cursor()
+    total_added = 0
+    # Example: parse list items for modules/adventures
+    for li in soup.select('li'):
+        title = li.get_text(strip=True)
+        if title and len(title) > 3:
+            try:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (None, title, "RPG", None, "Module/Adventure", lang, url)
+                )
+                total_added += 1
+            except Exception as e:
+                print(f"    [ERROR] DB insert failed for {title}: {e}", file=sys.stderr)
+    conn.commit()
+    print(f"[SUCCESS] RPG.net parsing complete. Added {total_added} entries.")
+
+def parse_drivethrurpg(conn, url, system, lang):
+    """
+    This parser gracefully handles the expected 403 error from DriveThruRPG.
+    Suggests manual import or using APIs if available.
+    """
+    print(f"\n[+] Skipping DriveThruRPG {system} products from {url} (scraping blocked).")
+    print("  [INFO] DriveThruRPG blocks automated scripts. Please use manual import, publisher data, or official APIs if available.")
+    return
+
+def parse_rpggeek_it(conn, url, lang):
+    """
+    Parser for RPGGeek Italian adventure lists.
+    """
+    print(f"\n[+] Parsing RPGGeek (Italian) from {url} (language: {lang})...")
+    soup = safe_request(url)
+    if not soup:
+        print(f"  [WARNING] Could not fetch RPGGeek (Italian) page: {url}", file=sys.stderr)
+        return
+    cursor = conn.cursor()
+    total_added = 0
+    for row in soup.select('table.geekitem_table tr'):
+        cols = row.find_all('td')
+        if len(cols) >= 2:
+            title = cols[1].get_text(strip=True)
+            if title:
+                try:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (None, title, "RPG", None, "Modulo/Avventura", lang, url)
+                    )
+                    total_added += 1
+                except Exception as e:
+                    print(f"    [ERROR] DB insert failed for {title}: {e}", file=sys.stderr)
+    conn.commit()
+    print(f"[SUCCESS] RPGGeek (Italian) parsing complete. Added {total_added} entries.")
 
 # --- Main Execution Block ---
 PARSER_MAPPING = {
@@ -235,7 +341,11 @@ PARSER_MAPPING = {
     "italian_dnd_wiki": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Modulo", l, "D&D Italian"), "Italian"),
     "italian_pathfinder_wiki": (lambda c, u, l: parse_wikipedia_generic(c, u, "Pathfinder", "Manuale", l, "Pathfinder Italian"), "Italian"),
     "drivethrurpg_dnd": (lambda c, u, l: parse_drivethrurpg(c, u, "D&D", l), "English"),
-    "drivethrurpg_pathfinder": (lambda c, u, l: parse_drivethrurpg(c, u, "Pathfinder", l), "English")
+    "drivethrurpg_pathfinder": (lambda c, u, l: parse_drivethrurpg(c, u, "Pathfinder", l), "English"),
+    "rpggeek_adventures": (parse_rpggeek, "English"),
+    "rpgnet_adventures": (parse_rpgnet, "English"),
+    "rpggeek_avventure_it": (parse_rpggeek_it, "Italian"),
+    # Add more Italian/other-language sources and parsers as needed
 }
 
 if __name__ == "__main__":
@@ -253,10 +363,18 @@ if __name__ == "__main__":
         for key, url in urls_to_scrape.items():
             print(f"\n[INFO] Processing: {key}")
             lang = url_languages.get(key, "English")
+            # Check robots.txt before scraping
+            if key.startswith("drivethrurpg"):
+                parse_drivethrurpg(connection, url, key, lang)
+                continue
+            if not is_scraping_allowed(url):
+                print(f"  [WARNING] Skipping {url} due to robots.txt policy.", file=sys.stderr)
+                continue
             if key in PARSER_MAPPING:
                 parser_func, _ = PARSER_MAPPING[key]
                 try:
                     parser_func(connection, url, lang)
+                    time.sleep(2)  # Throttle between sources
                 except Exception as e:
                     print(f"  [CRITICAL] Parser '{key}' failed unexpectedly: {e}", file=sys.stderr)
                     import traceback
