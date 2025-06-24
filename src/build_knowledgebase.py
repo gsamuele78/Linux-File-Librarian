@@ -40,20 +40,34 @@ def safe_request(url):
 
 # --- Specialized Parsers (All Parsers Fully Implemented) ---
 
-def parse_tsr_archive(conn, nav_url, lang):
+def parse_tsr_archive(conn, start_url, lang):
     """
     (REWRITTEN & FIXED) A robust crawler for tsrarchive.com.
-    It bypasses the site's frameset by directly fetching the navigation menu's HTML file,
-    then crawls each section and product page from there. This is the definitive, working solution.
+    It now correctly reads the <frameset> to find the navigation file URL,
+    bypassing the core issue and allowing for a full site scrape.
     """
-    print(f"\n[+] Parsing TSR Archive for language '{lang}' from navigation file: {nav_url}...")
+    print(f"\n[+] Parsing TSR Archive for language '{lang}' from starting page: {start_url}...")
     cursor = conn.cursor()
     total_added = 0
     
-    # 1. Fetch the navigation menu directly.
+    # 1. Fetch the initial frameset page to find the REAL navigation file URL.
+    index_soup = safe_request(start_url)
+    if not index_soup: return
+
+    # Find the <frame> tag that serves as the navigation menu.
+    nav_frame = index_soup.find('frame', {'name': 'nav'})
+    if not nav_frame or not nav_frame.get('src'):
+        print(f"  [CRITICAL] Could not find the 'nav' frame source URL on {start_url}. Aborting.", file=sys.stderr)
+        return
+        
+    # Construct the full, correct URL to the navigation file.
+    nav_url = urljoin(start_url, nav_frame['src'])
+    print(f"  -> Discovered navigation file at: {nav_url}")
+
+    # 2. Fetch the navigation menu directly.
     nav_soup = safe_request(nav_url)
     if not nav_soup:
-        print(f"  [CRITICAL] Could not fetch the navigation file for {lang}. Aborting TSR parser.", file=sys.stderr)
+        print(f"  [CRITICAL] Could not fetch the discovered navigation file. Aborting.", file=sys.stderr)
         return
 
     section_links = nav_soup.find_all('a', href=True)
@@ -65,13 +79,11 @@ def parse_tsr_archive(conn, nav_url, lang):
         if "Back to" in section_text or "Home" in section_text or not section_text:
             continue
             
-        # 2. For each section, go to its page and parse it.
         section_url = urljoin(nav_url, section_link['href'])
         print(f"    -> Scraping Section: {section_text}")
         section_soup = safe_request(section_url)
         if not section_soup: continue
 
-        # 3. Find all product links on the section page.
         for item_link in section_soup.select('b > a[href$=".html"]'):
             product_page_url = urljoin(section_url, item_link['href'])
             product_soup = safe_request(product_page_url)
@@ -86,7 +98,7 @@ def parse_tsr_archive(conn, nav_url, lang):
             if title and code_match:
                 code = f"TSR{code_match.group(1)}"
                 game_system = "AD&D" if "AD&D" in section_text else "D&D"
-                edition = "N/A" # TSR Archive doesn't cleanly separate editions within sections
+                edition = "N/A"
                 
                 cursor.execute(
                     "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -101,7 +113,6 @@ def parse_tsr_archive(conn, nav_url, lang):
 def parse_wikipedia_generic(conn, url, system, category, lang, description):
     """
     (RESTORED & UPGRADED) A stateful parser for Wikipedia that is multi-lingual and correctly finds editions.
-    It reads the page structure to determine the context (e.g., this table is for '4th Edition').
     """
     print(f"\n[+] Parsing Wikipedia: {description}...")
     cursor = conn.cursor()
@@ -121,8 +132,8 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
         elif tag.name == 'table' and 'wikitable' in tag.get('class', []):
             headers = [th.get_text(strip=True).lower() for th in tag.find_all('th')]
             try:
-                # Check for both English and Italian headers to be multi-lingual.
-                title_idx = headers.index('title') if 'title' in headers else headers.index('titolo')
+                # FIX: Check for English and multiple Italian headers to be robustly multi-lingual.
+                title_idx = headers.index('title') if 'title' in headers else headers.index('titolo') if 'titolo' in headers else headers.index('titolo originale')
                 code_idx = headers.index('code') if 'code' in headers else headers.index('codice') if 'codice' in headers else headers.index('codice prodotto') if 'codice prodotto' in headers else -1
                 edition_col_idx = headers.index('edition') if 'edition' in headers else headers.index('edizione') if 'edizione' in headers else -1
             except ValueError: continue
@@ -149,7 +160,7 @@ def parse_dndwiki_35e(conn, url, lang):
     total_added = 0
     content_div = soup.find('div', id='mw-content-text')
     if not content_div: return
-    # Find all list items, then check their content, which is more robust.
+    # FIX: Use a more general find_all to get all list items, not just direct children.
     for li in content_div.find_all('li'):
         title_tag = li.find('a')
         if title_tag:
@@ -174,14 +185,9 @@ def parse_drivethrurpg(conn, url, system, lang):
 
 
 # --- Main Execution Block ---
-# This dictionary maps the keys from config.ini to the correct parser function and its metadata.
 PARSER_MAPPING = {
-    # The key from the config file points to a tuple: (function_to_call, language, direct_url_override)
-    # The direct URL is used for the new TSR Archive strategy.
-    "tsr_archive_en": (parse_tsr_archive, "English", "http://www.tsrarchive.com/nav/nav-main.html"),
-    "tsr_archive_it": (parse_tsr_archive, "Italian", "https://www.tsrarchive.com/nav/nav-it.html"),
-    
-    # These parsers use the URL directly from the config file.
+    "tsr_archive_en": (parse_tsr_archive, "English"),
+    "tsr_archive_it": (parse_tsr_archive, "Italian"),
     "wiki_dnd_modules": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Module", l, "D&D Modules"), "English"),
     "wiki_dnd_adventures": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Adventure", l, "D&D Adventures"), "English"),
     "dndwiki_35e": (parse_dndwiki_35e, "English"),
@@ -202,17 +208,12 @@ if __name__ == "__main__":
         sys.exit(1)
         
     connection = init_db()
-    for key, _ in urls_to_scrape.items():
+    for key, url in urls_to_scrape.items():
         print(f"\n[INFO] Processing: {key}")
         if key in PARSER_MAPPING:
-            parser_info = PARSER_MAPPING[key]
-            parser_func = parser_info[0]
-            lang = parser_info[1]
-            # Use the specific URL from the mapping if it exists, otherwise use the one from the config file.
-            # This allows the TSR parser to target the nav file directly.
-            url = parser_info[2] if len(parser_info) > 2 else urls_to_scrape[key]
-            
+            parser_func, lang = PARSER_MAPPING[key]
             try:
+                # The URL from the config file is passed directly to the parser.
                 parser_func(connection, url, lang)
             except Exception as e:
                  print(f"  [CRITICAL] Parser '{key}' failed unexpectedly: {e}", file=sys.stderr)
