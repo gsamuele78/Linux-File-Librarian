@@ -12,6 +12,7 @@ import sys
 import unicodedata
 from rapidfuzz import fuzz
 from src.config_loader import load_config
+import requests  # For optional remote knowledge base
 
 def normalize_text(text):
     """
@@ -35,12 +36,24 @@ class Classifier:
         self.conn = None
         self.product_cache = {}
         self.path_keywords = {}
-        if os.path.exists(knowledge_db_path):
+        # Support loading knowledge base from a web URL if provided
+        if knowledge_db_path.startswith("http://") or knowledge_db_path.startswith("https://"):
+            local_tmp = "/tmp/knowledge.sqlite"
+            try:
+                r = requests.get(knowledge_db_path, timeout=30)
+                r.raise_for_status()
+                with open(local_tmp, "wb") as f:
+                    f.write(r.content)
+                knowledge_db_path = local_tmp
+            except Exception as e:
+                print(f"[WARNING] Could not download remote knowledge base: {e}", file=sys.stderr)
+                knowledge_db_path = None
+        if knowledge_db_path and os.path.exists(knowledge_db_path):
             try:
                 self.conn = sqlite3.connect(f"file:{knowledge_db_path}?mode=ro", uri=True)
                 self.load_products_to_cache()
                 self.load_path_keywords()
-                self.load_alternate_keywords()  # New: load alternate language keywords
+                self.load_alternate_keywords()
             except sqlite3.Error as e:
                 print(f"[WARNING] Could not connect to knowledge base. TTRPG classification will be limited. Error: {e}", file=sys.stderr)
         else:
@@ -187,12 +200,27 @@ def get_pdf_details(file_path):
         pass
     return is_valid, has_text
 
+def scan_files(source_paths):
+    """Generator for scanning files efficiently."""
+    for src in source_paths:
+        if not os.path.isdir(src):
+            print(f"[Warning] Source path not found, skipping: {src}", file=sys.stderr)
+            continue
+        for p in Path(src).rglob('*'):
+            if p.is_file():
+                try:
+                    yield {'path': str(p), 'name': p.name, 'size': p.stat().st_size}
+                except (IOError, OSError) as e:
+                    print(f"  [Warning] Could not stat file {p.name}. Skipping. Reason: {e}", file=sys.stderr)
+
 # --- Main Logic ---
 def build_library(config):
     # --- Step 1: Configuration & Setup ---
     SOURCE_PATHS, LIBRARY_ROOT = config['source_paths'], config['library_root']
     MIN_PDF_SIZE_BYTES = config['min_pdf_size_bytes']
     DB_FILE, KNOWLEDGE_DB_FILE = "library_index.sqlite", "knowledge.sqlite"
+    # Optionally, get language mapping for future use
+    KB_LANGS = config.get('knowledge_base_url_languages', {})
     
     print("--- Starting Library Build Process ---")
     os.makedirs(LIBRARY_ROOT, exist_ok=True)
@@ -200,19 +228,10 @@ def build_library(config):
 
     # --- Step 2: File Scanning ---
     print("Step 1: Scanning all source directories for files...")
-    all_files = []
-    for src in SOURCE_PATHS:
-        if not os.path.isdir(src):
-            print(f"[Warning] Source path not found, skipping: {src}", file=sys.stderr)
-            continue
-        for p in Path(src).rglob('*'):
-            if p.is_file():
-                try:
-                    all_files.append({'path': str(p), 'name': p.name, 'size': p.stat().st_size})
-                except (IOError, OSError) as e:
-                    print(f"  [Warning] Could not stat file {p.name}. Skipping. Reason: {e}", file=sys.stderr)
-    
-    if not all_files: print("No files found in source paths. Exiting."); return
+    all_files = list(scan_files(SOURCE_PATHS))
+    if not all_files:
+        print("No files found in source paths. Exiting.")
+        return
     df = pd.DataFrame(all_files)
     print(f"Found {len(df)} total files.")
 
@@ -226,14 +245,12 @@ def build_library(config):
         except magic.MagicException as e:
             print(f"  [Warning] Could not determine MIME type for {row['name']}. Reason: {e}", file=sys.stderr)
             mime_type = 'unknown/unknown'
-        
         file_hash = get_file_hash(path)
         is_pdf, has_ocr = (False, False)
         if 'pdf' in mime_type: is_pdf, has_ocr = get_pdf_details(path)
         system, edition, category = classifier.classify(row['name'], path, mime_type)
         analysis_results.append({'hash': file_hash, 'mime_type': mime_type, 'is_pdf_valid': is_pdf, 'has_ocr': has_ocr, 'game_system': system, 'edition': edition, 'category': category})
         if (index + 1) % 500 == 0: print(f"  ...processed {index + 1}/{len(df)} files")
-    
     df = pd.concat([df, pd.DataFrame(analysis_results)], axis=1).dropna(subset=['hash'])
 
     # --- Step 4: Deduplication & Selection ---
@@ -250,33 +267,48 @@ def build_library(config):
     # --- Step 5: Copy & Index ---
     print("Step 4: Copying files into new structure and building search index...")
     db_path = os.path.join(LIBRARY_ROOT, DB_FILE)
-    if os.path.exists(db_path): os.remove(db_path) 
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute('CREATE TABLE files (id INTEGER PRIMARY KEY, filename TEXT, path TEXT, type TEXT, size INTEGER, game_system TEXT, edition TEXT)')
-    
-    for _, row in unique_files.iterrows():
-        original_path = Path(row['path'])
-        new_filename = f"{original_path.stem}_{row['name_occurrence']}{original_path.suffix}" if row['name_occurrence'] > 0 else original_path.name
-        
-        dest_subdir = Path(row['game_system'] or 'Misc')
-        if row['edition'] and pd.notna(row['edition']): dest_subdir = dest_subdir / row['edition']
-        if row['category'] and pd.notna(row['category']): dest_subdir = dest_subdir / row['category']
-        
-        destination_path = Path(LIBRARY_ROOT) / dest_subdir / new_filename
-        os.makedirs(destination_path.parent, exist_ok=True)
+    if os.path.exists(db_path):
         try:
-            shutil.copy2(original_path, destination_path)
-            cursor.execute(
-                "INSERT INTO files (filename, path, type, size, game_system, edition) VALUES (?, ?, ?, ?, ?, ?)",
-                (new_filename, str(destination_path), row['mime_type'], row['size'], row['game_system'], row['edition'])
-            )
+            os.remove(db_path)
         except Exception as e:
-            print(f"  [Error] Could not copy {original_path}. Reason: {e}", file=sys.stderr)
-            
-    conn.commit()
-    conn.close()
-    classifier.close()
+            print(f"  [Error] Could not remove old DB: {e}", file=sys.stderr)
+            return
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('CREATE TABLE files (id INTEGER PRIMARY KEY, filename TEXT, path TEXT, type TEXT, size INTEGER, game_system TEXT, edition TEXT, language TEXT)')
+            batch = []
+            for _, row in unique_files.iterrows():
+                original_path = Path(row['path'])
+                new_filename = f"{original_path.stem}_{row['name_occurrence']}{original_path.suffix}" if row['name_occurrence'] > 0 else original_path.name
+                dest_subdir = Path(row['game_system'] or 'Misc')
+                if row['edition'] and pd.notna(row['edition']): dest_subdir = dest_subdir / row['edition']
+                if row['category'] and pd.notna(row['category']): dest_subdir = dest_subdir / row['category']
+                destination_path = Path(LIBRARY_ROOT) / dest_subdir / new_filename
+                os.makedirs(destination_path.parent, exist_ok=True)
+                try:
+                    shutil.copy2(original_path, destination_path)
+                    # Add language if available, else fallback to None
+                    language = getattr(row, 'language', None)
+                    batch.append((new_filename, str(destination_path), row['mime_type'], row['size'], row['game_system'], row['edition'], language))
+                except Exception as e:
+                    print(f"  [Error] Could not copy {original_path}. Reason: {e}", file=sys.stderr)
+                if len(batch) >= 100:
+                    cursor.executemany(
+                        "INSERT INTO files (filename, path, type, size, game_system, edition, language) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        batch
+                    )
+                    batch = []
+            if batch:
+                cursor.executemany(
+                    "INSERT INTO files (filename, path, type, size, game_system, edition, language) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    batch
+                )
+            conn.commit()
+    except Exception as e:
+        print(f"  [Error] Could not build library DB: {e}", file=sys.stderr)
+    finally:
+        classifier.close()
     print(f"\n--- Library Build Complete! ---")
     print(f"Total unique files copied: {len(unique_files)}")
     print(f"New library location: {LIBRARY_ROOT}")
@@ -285,6 +317,10 @@ def build_library(config):
 if __name__ == '__main__':
     try:
         config = load_config()
+        # Allow knowledge_base_urls to specify a remote DB file
+        knowledge_db_url = config.get('knowledge_base_db_url')
+        if knowledge_db_url:
+            config['knowledge_base_db_url'] = knowledge_db_url.strip()
         if not config['source_paths'] or "/path/to/" in config['source_paths'][0]:
              print("[FATAL] Configuration Error: 'source_paths' is not set in conf/config.ini.", file=sys.stderr)
              sys.exit(1)

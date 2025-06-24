@@ -15,7 +15,12 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 
 def init_db():
     """Initializes a fresh database, deleting any existing one to ensure a clean build."""
-    if os.path.exists(DB_FILE): os.remove(DB_FILE)
+    if os.path.exists(DB_FILE):
+        try:
+            os.remove(DB_FILE)
+        except Exception as e:
+            print(f"[ERROR] Could not remove old DB: {e}", file=sys.stderr)
+            raise
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -28,15 +33,47 @@ def init_db():
     conn.commit()
     return conn
 
-def safe_request(url):
-    """Makes a simple web request and handles potential network errors gracefully."""
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        return BeautifulSoup(response.content, 'lxml')
-    except requests.exceptions.RequestException as e:
-        print(f"  [ERROR] Could not fetch {url}. Reason: {e}", file=sys.stderr)
-        return None
+def safe_request(url, retries=3, delay=2):
+    """
+    Makes a web request with retries and handles network errors robustly.
+    Returns BeautifulSoup object or None.
+    """
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=15)
+            response.raise_for_status()
+            return BeautifulSoup(response.content, 'lxml')
+        except requests.exceptions.RequestException as e:
+            print(f"  [ERROR] Could not fetch {url} (attempt {attempt+1}/{retries}): {e}", file=sys.stderr)
+            if attempt < retries - 1:
+                time.sleep(delay)
+    return None
+
+def normalize_whitespace(text):
+    """Utility to normalize whitespace in strings."""
+    return re.sub(r'\s+', ' ', text or '').strip()
+
+def parse_table_rows(table, header_map):
+    """
+    Yields dicts mapping header names to cell values for each row in a table.
+    header_map: dict mapping logical names to possible header strings.
+    """
+    headers = [normalize_whitespace(th.get_text()) for th in table.find_all('th')]
+    col_indices = {}
+    for logical, possible in header_map.items():
+        for idx, h in enumerate(headers):
+            if h.lower() in possible:
+                col_indices[logical] = idx
+                break
+    for row in table.find_all('tr')[1:]:
+        cols = row.find_all(['td', 'th'])
+        row_data = {}
+        for logical, idx in col_indices.items():
+            if idx < len(cols):
+                row_data[logical] = normalize_whitespace(cols[idx].get_text())
+            else:
+                row_data[logical] = None
+        yield row_data
 
 # --- Specialized Parsers (All Parsers Fully Implemented) ---
 
@@ -74,101 +111,105 @@ def parse_tsr_archive(conn, start_url, lang):
     print(f"  -> Found {len(section_links)} potential sections to crawl.")
     
     for section_link in section_links:
-        section_text = section_link.get_text(strip=True)
-        # Filter out irrelevant navigation links.
-        if "Back to" in section_text or "Home" in section_text or not section_text:
+        section_text = normalize_whitespace(section_link.get_text())
+        if not section_text or any(x in section_text for x in ("Back to", "Home")):
             continue
-            
         section_url = urljoin(nav_url, section_link['href'])
-        print(f"    -> Scraping Section: {section_text}")
         section_soup = safe_request(section_url)
-        if not section_soup: continue
-
+        if not section_soup:
+            continue
         for item_link in section_soup.select('b > a[href$=".html"]'):
             product_page_url = urljoin(section_url, item_link['href'])
             product_soup = safe_request(product_page_url)
-            if not product_soup: continue
-
+            if not product_soup:
+                continue
             title_tag = product_soup.find('h1')
-            title = title_tag.get_text(strip=True) if title_tag else item_link.get_text(strip=True)
-
+            title = normalize_whitespace(title_tag.get_text() if title_tag else item_link.get_text())
             page_text = product_soup.get_text()
             code_match = re.search(r'TSR\s?(\d{4,5})', page_text)
-            
             if title and code_match:
                 code = f"TSR{code_match.group(1)}"
                 game_system = "AD&D" if "AD&D" in section_text else "D&D"
                 edition = "N/A"
-                
-                cursor.execute(
-                    "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (code, title, game_system, edition, "Module/Adventure", lang, product_page_url)
-                )
-                total_added += cursor.rowcount
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (code, title, game_system, edition, "Module/Adventure", lang, product_page_url)
+                    )
+                    total_added += 1
+                except Exception as e:
+                    print(f"    [ERROR] DB insert failed for {title}: {e}", file=sys.stderr)
     conn.commit()
     time.sleep(1) # Be a good internet citizen.
     
-    print(f"[SUCCESS] TSR Archive parsing for '{lang}' complete. Added {total_added} unique entries.")
+    print(f"[SUCCESS] TSR Archive parsing for '{lang}' complete.")
 
 def parse_wikipedia_generic(conn, url, system, category, lang, description):
     """
     (RESTORED & UPGRADED) A stateful parser for Wikipedia that is multi-lingual and correctly finds editions.
     """
     print(f"\n[+] Parsing Wikipedia: {description}...")
-    cursor = conn.cursor()
     soup = safe_request(url)
-    if not soup: return
-    total_added = 0
+    if not soup:
+        return
     content = soup.find(id='mw-content-text')
-    if not content: return
-
+    if not content:
+        print(f"  [WARNING] No content found for {url}", file=sys.stderr)
+        return
     current_edition = "N/A"
-    # Iterate through all relevant tags in order to maintain the 'edition' context state.
+    header_map = {
+        "title": {"title", "titolo", "titolo originale"},
+        "code": {"code", "codice", "codice prodotto"},
+        "edition": {"edition", "edizione"}
+    }
+    total_added = 0
     for tag in content.find_all(['h2', 'h3', 'table']):
-        if tag.name == 'h2' or tag.name == 'h3':
+        if tag.name in ('h2', 'h3'):
             headline = tag.find(class_='mw-headline')
-            if headline: current_edition = headline.get_text(strip=True)
-        
+            if headline:
+                current_edition = normalize_whitespace(headline.get_text())
         elif tag.name == 'table' and 'wikitable' in tag.get('class', []):
-            headers = [th.get_text(strip=True).lower() for th in tag.find_all('th')]
-            try:
-                # FIX: Check for English and multiple Italian headers to be robustly multi-lingual.
-                title_idx = headers.index('title') if 'title' in headers else headers.index('titolo') if 'titolo' in headers else headers.index('titolo originale')
-                code_idx = headers.index('code') if 'code' in headers else headers.index('codice') if 'codice' in headers else headers.index('codice prodotto') if 'codice prodotto' in headers else -1
-                edition_col_idx = headers.index('edition') if 'edition' in headers else headers.index('edizione') if 'edizione' in headers else -1
-            except ValueError: continue
-            
-            for row in tag.find_all('tr')[1:]:
-                cols = row.find_all(['td', 'th'])
-                if len(cols) > title_idx:
-                    title = cols[title_idx].get_text(strip=True)
-                    code = cols[code_idx].get_text(strip=True) if code_idx != -1 and len(cols) > code_idx else None
-                    edition_in_table = cols[edition_col_idx].get_text(strip=True) if edition_col_idx != -1 and len(cols) > edition_col_idx else None
-                    final_edition = edition_in_table or current_edition
-                    if title and "List of" not in title and len(title) > 1:
-                        cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (code, title, system, final_edition, category, lang, url))
-                        total_added += cursor.rowcount
+            for row in parse_table_rows(tag, header_map):
+                title = row.get("title")
+                code = row.get("code")
+                edition_in_table = row.get("edition")
+                final_edition = edition_in_table or current_edition
+                if title and "List of" not in title and len(title) > 1:
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (code, title, system, final_edition, category, lang, url)
+                        )
+                        total_added += 1
+                    except Exception as e:
+                        print(f"    [ERROR] DB insert failed for {title}: {e}", file=sys.stderr)
     conn.commit()
     print(f"[SUCCESS] Wikipedia ({description}) parsing complete. Added {total_added} unique entries.")
 
 def parse_dndwiki_35e(conn, url, lang):
     """(RESTORED) Parser for dnd-wiki.org that correctly parses the full page."""
     print(f"\n[+] Parsing dnd-wiki.org for 3.5e Adventures...")
-    cursor = conn.cursor()
     soup = safe_request(url)
-    if not soup: return
-    total_added = 0
+    if not soup:
+        return
     content_div = soup.find('div', id='mw-content-text')
-    if not content_div: return
-    # FIX: Use a more general find_all to get all list items, not just direct children.
+    if not content_div:
+        print(f"  [WARNING] No content found for {url}", file=sys.stderr)
+        return
+    total_added = 0
     for li in content_div.find_all('li'):
         title_tag = li.find('a')
         if title_tag:
-            title = title_tag.get_text(strip=True)
-            # More aggressive filtering to exclude index links and categories.
+            title = normalize_whitespace(title_tag.get_text())
             if title and len(title) > 1 and "Category:" not in title and "d20srd" not in title_tag.get('href', ''):
-                cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (None, title, "D&D", "3.5e", "Adventure", lang, url))
-                total_added += cursor.rowcount
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (None, title, "D&D", "3.5e", "Adventure", lang, url)
+                    )
+                    total_added += 1
+                except Exception as e:
+                    print(f"    [ERROR] DB insert failed for {title}: {e}", file=sys.stderr)
     conn.commit()
     print(f"[SUCCESS] dnd-wiki.org parsing complete. Added {total_added} unique entries.")
 
@@ -180,7 +221,6 @@ def parse_drivethrurpg(conn, url, system, lang):
     if not soup:
         print(f"[SKIPPED] Could not access DriveThruRPG for {system}, as expected.")
         return
-    # If by some miracle it worked, the logic would go here.
     print("[SUCCESS] DriveThruRPG parsing step finished (likely with an error, which is expected).")
 
 
@@ -203,25 +243,35 @@ if __name__ == "__main__":
     try:
         config = load_config()
         urls_to_scrape = config['knowledge_base_urls']
+        url_languages = config.get('knowledge_base_url_languages', {})
     except Exception as e:
         print(f"[FATAL] Could not load configuration. Error: {e}", file=sys.stderr)
         sys.exit(1)
-        
-    connection = init_db()
-    for key, url in urls_to_scrape.items():
-        print(f"\n[INFO] Processing: {key}")
-        if key in PARSER_MAPPING:
-            parser_func, lang = PARSER_MAPPING[key]
-            try:
-                # The URL from the config file is passed directly to the parser.
-                parser_func(connection, url, lang)
-            except Exception as e:
-                 print(f"  [CRITICAL] Parser '{key}' failed unexpectedly: {e}", file=sys.stderr)
-                 import traceback
-                 traceback.print_exc()
-        else:
-            print(f"  [WARNING] No parser available for config key '{key}'. Skipping.", file=sys.stderr)
-    
+
+    try:
+        connection = init_db()
+        for key, url in urls_to_scrape.items():
+            print(f"\n[INFO] Processing: {key}")
+            lang = url_languages.get(key, "English")
+            if key in PARSER_MAPPING:
+                parser_func, _ = PARSER_MAPPING[key]
+                try:
+                    parser_func(connection, url, lang)
+                except Exception as e:
+                    print(f"  [CRITICAL] Parser '{key}' failed unexpectedly: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"  [WARNING] No parser available for config key '{key}'. Skipping.", file=sys.stderr)
+    except Exception as e:
+        print(f"[FATAL] Unhandled error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
     # --- Dynamic and Correct Statistics Report ---
     print("\n--- Knowledge Base Statistics ---")
     cursor = connection.cursor()

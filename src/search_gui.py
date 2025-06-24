@@ -47,9 +47,16 @@ class SearchApp(tk.Tk):
         self.file_type_combo = ttk.Combobox(self.filter_frame, textvariable=self.file_type_var, state="readonly", width=30)
         self.file_type_combo.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
 
+        # Language Filter
+        ttk.Label(self.filter_frame, text="Language:").grid(row=0, column=4, padx=(20, 5), pady=5, sticky="w")
+        self.language_var = tk.StringVar()
+        self.language_combo = ttk.Combobox(self.filter_frame, textvariable=self.language_var, state="readonly", width=20)
+        self.language_combo.grid(row=0, column=5, padx=5, pady=5, sticky="ew")
+
         # Make combobox columns expandable
         self.filter_frame.grid_columnconfigure(1, weight=1)
         self.filter_frame.grid_columnconfigure(3, weight=1)
+        self.filter_frame.grid_columnconfigure(5, weight=1)
         
         # Populate the dropdowns with data from the database
         self.populate_filters()
@@ -101,22 +108,27 @@ class SearchApp(tk.Tk):
     def populate_filters(self):
         """Populates the comboboxes with data from the library index."""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Get unique Game Systems/Categories
-            cursor.execute("SELECT DISTINCT game_system FROM files WHERE game_system IS NOT NULL ORDER BY game_system")
-            systems = [row[0] for row in cursor.fetchall()]
-            self.game_system_combo['values'] = ["-- ALL --"] + systems
-            self.game_system_combo.set("-- ALL --")
-            
-            # Get unique File Types
-            cursor.execute("SELECT DISTINCT type FROM files WHERE type IS NOT NULL ORDER BY type")
-            types = [row[0] for row in cursor.fetchall()]
-            self.file_type_combo['values'] = ["-- ALL --"] + types
-            self.file_type_combo.set("-- ALL --")
-            
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get unique Game Systems/Categories
+                cursor.execute("SELECT DISTINCT game_system FROM files WHERE game_system IS NOT NULL ORDER BY game_system")
+                systems = [row[0] for row in cursor.fetchall()]
+                self.game_system_combo['values'] = ["-- ALL --"] + systems
+                self.game_system_combo.set("-- ALL --")
+                
+                # Get unique File Types
+                cursor.execute("SELECT DISTINCT type FROM files WHERE type IS NOT NULL ORDER BY type")
+                types = [row[0] for row in cursor.fetchall()]
+                self.file_type_combo['values'] = ["-- ALL --"] + types
+                self.file_type_combo.set("-- ALL --")
+                
+                # Get unique Languages
+                cursor.execute("SELECT DISTINCT language FROM files WHERE language IS NOT NULL ORDER BY language")
+                langs = [row[0] for row in cursor.fetchall()]
+                self.language_combo['values'] = ["-- ALL --"] + langs
+                self.language_combo.set("-- ALL --")
+                
         except sqlite3.Error as e:
             messagebox.showerror("Database Error", f"Could not populate filters: {e}")
 
@@ -148,18 +160,23 @@ class SearchApp(tk.Tk):
             query += " AND type = ?"
             params.append(type_filter)
 
+        # Add language filter
+        lang_filter = getattr(self, 'language_var', None)
+        if lang_filter and lang_filter.get() and lang_filter.get() != "-- ALL --":
+            query += " AND language = ?"
+            params.append(lang_filter.get())
+
         query += " ORDER BY game_system, filename"
 
         # Execute the query and populate the results tree
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(query, tuple(params))
-            for row in cursor.fetchall():
-                filename, game_sys, file_type, size_bytes, path = row
-                size_kb = f"{size_bytes / 1024:.1f}" if size_bytes else "0.0"
-                self.tree.insert("", tk.END, values=(filename, game_sys or '', file_type or '', size_kb, path))
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, tuple(params))
+                for row in cursor.fetchall():
+                    filename, game_sys, file_type, size_bytes, path = row
+                    size_kb = f"{size_bytes / 1024:.1f}" if size_bytes else "0.0"
+                    self.tree.insert("", tk.END, values=(filename, game_sys or '', file_type or '', size_kb, path))
         except sqlite3.Error as e:
             messagebox.showerror("Database Error", f"Search failed: {e}")
             
@@ -184,6 +201,8 @@ class SearchApp(tk.Tk):
                 subprocess.run(["open", file_path], check=True)
             else: # linux and other UNIX
                 subprocess.run(["xdg-open", file_path], check=True)
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Error", f"Could not open file (subprocess error):\n{e}")
         except Exception as e:
             messagebox.showerror("Error", f"Could not open file:\n{e}")
 
