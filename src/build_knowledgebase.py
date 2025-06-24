@@ -9,26 +9,23 @@ from collections import defaultdict
 from urllib.parse import urljoin
 
 # --- NEW IMPORTS FOR SELENIUM ---
-# Selenium is a powerful tool that controls a real web browser, allowing it to
-# handle complex websites with frames, JavaScript, and dynamic content.
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-# This manager automatically downloads and installs the correct driver for Chrome.
+# This is the "smart wait" tool.
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 from src.config_loader import load_config
 
 # --- Configuration ---
 DB_FILE = "knowledge.sqlite"
-# This User-Agent is for the simple 'requests' library. Selenium uses its own.
 HEADERS = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
 
 def init_db():
-    """Initializes a fresh database, deleting any existing one to ensure a clean build."""
-    if os.path.exists(DB_FILE):
-        os.remove(DB_FILE)
+    if os.path.exists(DB_FILE): os.remove(DB_FILE)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -52,27 +49,23 @@ def safe_request(url):
         return None
 
 def setup_driver():
-    """
-    Sets up a headless Chrome browser instance for Selenium to use.
-    'Headless' means the browser runs in the background without a visible window.
-    """
+    """Sets up a headless Chrome browser instance for Selenium to use."""
     print("  [INFO] Setting up headless Chrome browser for Selenium...")
     chrome_options = Options()
     chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox") # Required for running as root/in containers
+    chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # This automatically downloads the correct driver for your installed version of Chrome.
+    chrome_options.add_argument("user-agent=" + HEADERS['User-Agent'])
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     print("  [INFO] Browser setup complete.")
     return driver
 
-# --- Specialized Parsers ---
+# --- Specialized Parsers (Rewritten with Professional-Grade Selenium) ---
 
 def parse_tsr_archive_selenium(conn, start_url, lang):
     """
-    (REWRITTEN WITH SELENIUM) A robust crawler for tsrarchive.com that correctly handles frames.
-    This function launches a real browser to see the page exactly as a user does.
+    (REWRITTEN WITH ROBUST SELENIUM) A crawler for tsrarchive.com that correctly handles frames.
     """
     print(f"\n[+] Parsing TSR Archive with Selenium for '{lang}' from: {start_url}...")
     cursor = conn.cursor()
@@ -81,50 +74,38 @@ def parse_tsr_archive_selenium(conn, start_url, lang):
 
     try:
         driver = setup_driver()
-        print(f"  -> Navigating to start page...")
         driver.get(start_url)
-        time.sleep(3) # Give the page and its frames time to load completely.
-
-        # The key to solving the problem: Switch into the navigation frame ('nav').
-        # The simple 'requests' library cannot do this.
-        driver.switch_to.frame("nav")
         
-        # Now that we are inside the nav frame, find all links.
-        section_link_elements = driver.find_elements(By.TAG_NAME, 'a')
+        # FIX: Use a "smart wait" to ensure the frame is loaded before trying to access it.
+        # This waits up to 10 seconds for the frame named 'nav' to be available.
+        print("  -> Waiting for navigation frame...")
+        wait = WebDriverWait(driver, 10)
+        wait.until(EC.frame_to_be_available_and_switch_to_it((By.NAME, "nav")))
+        print("  -> Switched to navigation frame.")
+        
         section_links_data = []
-        for link in section_link_elements:
+        for link in driver.find_elements(By.TAG_NAME, 'a'):
             href = link.get_attribute('href')
             text = link.text
-            # Collect the URL and text of each valid section link.
             if href and text and "Back to" not in text:
                 section_links_data.append({'url': href, 'text': text})
         
-        # IMPORTANT: Return to the main document context before proceeding.
         driver.switch_to.default_content()
-
         print(f"  -> Found {len(section_links_data)} content sections to crawl.")
 
-        # Loop through the discovered sections.
         for section_data in section_links_data:
             section_url = section_data['url']
             section_text = section_data['text']
             print(f"    -> Scraping Section: {section_text}")
-
             driver.get(section_url)
-            time.sleep(2)
+            wait.until(EC.frame_to_be_available_and_switch_to_it((By.NAME, "main")))
             
-            # Switch to the main content frame where the product lists are.
-            driver.switch_to.frame("main")
-            # Get the fully rendered HTML from the frame.
             section_soup = BeautifulSoup(driver.page_source, 'lxml')
             driver.switch_to.default_content()
 
-            # Parse the section page for product links.
             for item_link in section_soup.select('b > a[href$=".html"]'):
-                # Visit each product page to get the most accurate data.
                 product_page_url = urljoin(section_url, item_link['href'])
                 driver.get(product_page_url)
-                time.sleep(1)
                 
                 product_soup = BeautifulSoup(driver.page_source, 'lxml')
                 title_tag = product_soup.find('h1')
@@ -147,38 +128,83 @@ def parse_tsr_archive_selenium(conn, start_url, lang):
     except Exception as e:
         print(f"  [CRITICAL] Selenium parser for TSR Archive failed: {e}", file=sys.stderr)
     finally:
-        # Ensure the browser is always closed, even if errors occur.
         if driver:
             driver.quit()
 
     print(f"[SUCCESS] TSR Archive parsing for '{lang}' complete. Added {total_added} unique entries.")
 
+# --- (Other parsers now have their full code restored) ---
 def parse_wikipedia_generic(conn, url, system, category, lang, description):
-    """A stateful parser for Wikipedia that correctly determines the edition and handles multiple languages."""
+    """A stateful parser for Wikipedia that is multi-lingual and correctly finds editions."""
     print(f"\n[+] Parsing Wikipedia: {description}...")
-    # ... (This parser's code is correct and does not need to change)
-    pass
+    cursor = conn.cursor()
+    soup = safe_request(url)
+    if not soup: return
+    total_added = 0
+    content = soup.find(id='mw-content-text')
+    if not content: return
+
+    current_edition = "N/A"
+    for tag in content.find_all(['h2', 'h3', 'table']):
+        if tag.name == 'h2' or tag.name == 'h3':
+            headline = tag.find(class_='mw-headline')
+            if headline: current_edition = headline.get_text(strip=True)
+        
+        elif tag.name == 'table' and 'wikitable' in tag.get('class', []):
+            headers = [th.get_text(strip=True).lower() for th in tag.find_all('th')]
+            try:
+                title_idx = headers.index('title') if 'title' in headers else headers.index('titolo')
+                code_idx = headers.index('code') if 'code' in headers else headers.index('codice') if 'codice' in headers else -1
+                edition_col_idx = headers.index('edition') if 'edition' in headers else headers.index('edizione') if 'edizione' in headers else -1
+            except ValueError: continue
+            
+            for row in tag.find_all('tr')[1:]:
+                cols = row.find_all(['td', 'th'])
+                if len(cols) > title_idx:
+                    title = cols[title_idx].get_text(strip=True)
+                    code = cols[code_idx].get_text(strip=True) if code_idx != -1 and len(cols) > code_idx else None
+                    edition_in_table = cols[edition_col_idx].get_text(strip=True) if edition_col_idx != -1 and len(cols) > edition_col_idx else None
+                    final_edition = edition_in_table or current_edition
+                    if title and "List of" not in title and len(title) > 1:
+                        cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (code, title, system, final_edition, category, lang, url))
+                        total_added += cursor.rowcount
+    conn.commit()
+    print(f"[SUCCESS] Wikipedia ({description}) parsing complete. Added {total_added} unique entries.")
 
 def parse_dndwiki_35e(conn, url, lang):
     """Parser for dnd-wiki.org that correctly parses the full page."""
     print(f"\n[+] Parsing dnd-wiki.org for 3.5e Adventures...")
-    # ... (This parser's code is correct and does not need to change)
-    pass
+    cursor = conn.cursor()
+    soup = safe_request(url)
+    if not soup: return
+    total_added = 0
+    content_div = soup.find('div', id='mw-content-text')
+    if not content_div: return
+    for li in content_div.find_all('li'):
+        title_tag = li.find('a')
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+            if title and len(title) > 1 and "Category:" not in title and "d20srd" not in title_tag.get('href', ''):
+                cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (None, title, "D&D", "3.5e", "Adventure", lang, url))
+                total_added += cursor.rowcount
+    conn.commit()
+    print(f"[SUCCESS] dnd-wiki.org parsing complete. Added {total_added} unique entries.")
 
 def parse_drivethrurpg(conn, url, system, lang):
     """Parser that gracefully handles the expected 403 error from DriveThruRPG."""
     print(f"\n[+] Parsing DriveThruRPG {system} products from {url}...")
-    # ... (This parser's code is correct and does not need to change)
-    pass
+    print("  [INFO] DriveThruRPG actively blocks automated scripts (HTTP 403 Error).")
+    soup = safe_request(url)
+    if not soup:
+        print(f"[SKIPPED] Could not access DriveThruRPG for {system}, as expected.")
+        return
+    print("[SUCCESS] DriveThruRPG parsing step finished (likely with an error, which is expected).")
+
 
 # --- Main Execution Block ---
-# This dictionary maps a key from the config file to the correct parser function.
 PARSER_MAPPING = {
-    # The two TSR archive keys now point to the SAME powerful Selenium parser.
     "tsr_archive_en": (parse_tsr_archive_selenium, "English"),
     "tsr_archive_it": (parse_tsr_archive_selenium, "Italian"),
-    
-    # The other parsers use the simpler 'requests' library.
     "wiki_dnd_modules": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Module", l, "D&D Modules"), "English"),
     "wiki_dnd_adventures": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Adventure", l, "D&D Adventures"), "English"),
     "dndwiki_35e": (parse_dndwiki_35e, "English"),
@@ -210,7 +236,6 @@ if __name__ == "__main__":
         else:
             print(f"  [WARNING] No parser available for config key '{key}'. Skipping.", file=sys.stderr)
     
-    # --- Final Statistics Report ---
     print("\n--- Knowledge Base Statistics ---")
     cursor = connection.cursor()
     cursor.execute("SELECT COUNT(*) FROM products")
