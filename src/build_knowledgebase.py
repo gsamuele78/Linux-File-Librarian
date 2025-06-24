@@ -5,7 +5,7 @@ import re
 import os
 import time
 import sys
-from difflib import SequenceMatcher
+from collections import defaultdict
 from src.config_loader import load_config
 
 # --- Configuration ---
@@ -13,572 +13,191 @@ DB_FILE = "knowledge.sqlite"
 HEADERS = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
 
 def init_db():
-    """
-    Initializes a fresh database with enhanced deduplication structure.
-    """
+    """Initializes a fresh database, deleting any existing one to ensure a clean build."""
     if os.path.exists(DB_FILE):
         os.remove(DB_FILE)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # Enhanced table structure for better deduplication
+    # Add a 'language' column to track the source and add a UNIQUE constraint to prevent duplicates.
     cursor.execute('''
         CREATE TABLE products (
-            id INTEGER PRIMARY KEY,
-            product_code TEXT,
-            title TEXT NOT NULL,
-            title_normalized TEXT NOT NULL,
-            game_system TEXT NOT NULL,
-            edition TEXT,
-            category TEXT,
-            language TEXT DEFAULT 'en',
-            year INTEGER,
-            isbn TEXT,
-            source_url TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(title_normalized, game_system, edition, language)
+            id INTEGER PRIMARY KEY, product_code TEXT, title TEXT NOT NULL,
+            game_system TEXT NOT NULL, edition TEXT, category TEXT, language TEXT, source_url TEXT,
+            UNIQUE(product_code, title, game_system, edition, language)
         )
     ''')
-    
-    # Index for faster similarity searches
-    cursor.execute('CREATE INDEX idx_title_normalized ON products(title_normalized)')
-    cursor.execute('CREATE INDEX idx_game_system_edition ON products(game_system, edition)')
-    
     conn.commit()
     return conn
 
-def normalize_title(title):
-    """
-    Normalizes titles for better deduplication by removing common variations.
-    """
-    if not title:
-        return ""
-    
-    # Convert to lowercase and remove special characters
-    normalized = re.sub(r'[^\w\s]', ' ', title.lower())
-    
-    # Remove common words that don't affect uniqueness
-    stop_words = ['the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'by']
-    words = [word for word in normalized.split() if word not in stop_words]
-    
-    # Remove edition markers for better matching
-    edition_patterns = [r'\b\d+e\b', r'\bedition\b', r'\bed\b', r'\brev\b', r'\brevised\b']
-    text = ' '.join(words)
-    for pattern in edition_patterns:
-        text = re.sub(pattern, '', text)
-    
-    return ' '.join(text.split())  # Remove extra spaces
-
-def similarity_ratio(a, b):
-    """Calculate similarity ratio between two strings."""
-    return SequenceMatcher(None, a, b).ratio()
-
-def is_duplicate(cursor, title, game_system, edition, language, threshold=0.85):
-    """
-    Check if a product is likely a duplicate based on title similarity.
-    """
-    normalized_title = normalize_title(title)
-    
-    # First check exact match
-    cursor.execute(
-        "SELECT id, title FROM products WHERE title_normalized = ? AND game_system = ? AND edition = ? AND language = ?",
-        (normalized_title, game_system, edition, language)
-    )
-    if cursor.fetchone():
-        return True
-    
-    # Then check similarity within same system/edition
-    cursor.execute(
-        "SELECT title, title_normalized FROM products WHERE game_system = ? AND edition = ? AND language = ?",
-        (game_system, edition, language)
-    )
-    
-    for existing_title, existing_normalized in cursor.fetchall():
-        if similarity_ratio(normalized_title, existing_normalized) >= threshold:
-            return True
-    
-    return False
-
 def safe_request(url):
-    """
-    Makes a web request with error handling and rate limiting.
-    """
+    """Makes a web request and handles potential network errors gracefully."""
     try:
         response = requests.get(url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
+        response.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
         return BeautifulSoup(response.content, 'lxml')
     except requests.exceptions.RequestException as e:
         print(f"  [ERROR] Could not fetch {url}. Reason: {e}", file=sys.stderr)
         return None
 
-def extract_year(text):
-    """Extract year from text if present."""
-    year_match = re.search(r'\b(19|20)\d{2}\b', text)
-    return int(year_match.group()) if year_match else None
+# --- Specialized Parsers (Rewritten for Robustness) ---
 
-def extract_isbn(text):
-    """Extract ISBN from text if present."""
-    isbn_match = re.search(r'ISBN[:\s]*([0-9-]+)', text, re.IGNORECASE)
-    return isbn_match.group(1) if isbn_match else None
-
-# --- Enhanced Parsers ---
-
-def parse_tsr_archive(conn, url):
-    """Enhanced TSR Archive parser with better deduplication."""
+def parse_tsr_archive(conn, url, lang):
+    """(FIXED) Parser for tsrarchive.com. Now correctly avoids navigation links."""
     print(f"\n[+] Parsing tsrarchive.com from {url}...")
     base_url = "http://www.tsrarchive.com/"
     cursor = conn.cursor()
     soup = safe_request(url)
-    if not soup:
-        return
-    
+    if not soup: return
     total_added = 0
-    
-    for link in soup.select('a[href*=".html"]'):
+    # FIX: The selector now targets links within table cells (<td>) to avoid nav bars.
+    for link in soup.select('td a[href*=".html"]'):
         sub_page_url = base_url + link['href']
         game_system = link.get_text(strip=True)
-        
-        if not game_system or game_system == "Home":
-            continue
-        
+        # FIX: More robust filtering of irrelevant links like "Back to..."
+        if not game_system or "Back to" in game_system or "Home" in game_system: continue
         print(f"  -> Scraping system: {game_system}")
         sub_soup = safe_request(sub_page_url)
-        if not sub_soup:
-            continue
-        
+        if not sub_soup: continue
         for item in sub_soup.select('b a[href*=".html"]'):
             title = item.get_text(strip=True)
-            parent_text = item.parent.get_text()
-            
-            # Extract product code
-            code_match = re.search(r'\((TSR\s?\d{4,5})\)', parent_text)
-            code = code_match.group(1).replace(" ", "") if code_match else None
-            
-            # Extract year
-            year = extract_year(parent_text)
-            
-            if title and not is_duplicate(cursor, title, game_system, "1e/2e", "en"):
-                cursor.execute(
-                    """INSERT INTO products 
-                       (product_code, title, title_normalized, game_system, edition, category, language, year, source_url) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (code, title, normalize_title(title), game_system, "1e/2e", "Module/Adventure", "en", year, sub_page_url)
-                )
-                total_added += 1
-    
+            code_match = re.search(r'\((TSR\s?\d{4,5})\)', item.parent.get_text())
+            if title and code_match:
+                code = code_match.group(1).replace(" ", "")
+                cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (code, title, game_system, "1e/2e", "Module/Adventure", lang, sub_page_url))
+                total_added += cursor.rowcount
     conn.commit()
-    time.sleep(1)
+    time.sleep(1) # Be a good internet citizen.
     print(f"[SUCCESS] tsrarchive.com parsing complete. Added {total_added} unique entries.")
 
-def parse_wikipedia_dnd(conn, url, description):
-    """Enhanced Wikipedia D&D parser with better edition detection."""
+def parse_wikipedia_generic(conn, url, system, category, lang, description):
+    """(FIXED & GENERALIZED) A more robust parser for Wikipedia tables that works for multiple languages."""
     print(f"\n[+] Parsing Wikipedia: {description}...")
     cursor = conn.cursor()
     soup = safe_request(url)
-    if not soup:
-        return
-    
+    if not soup: return
     total_added = 0
-    
-    for header in soup.find_all('h2'):
-        edition_text = header.find(class_='mw-headline')
-        if not edition_text:
-            continue
+    # Strategy: Find all valid tables and extract data based on header names.
+    for table in soup.find_all('table', class_='wikitable'):
+        headers = [th.get_text(strip=True).lower() for th in table.find_all('th')]
+        try:
+            # FIX: More flexible header finding for both English and Italian pages.
+            title_idx = headers.index('title') if 'title' in headers else headers.index('titolo')
+            code_idx = headers.index('code') if 'code' in headers else headers.index('codice') if 'codice' in headers else -1
+            edition_idx = headers.index('edition') if 'edition' in headers else headers.index('edizione') if 'edizione' in headers else -1
+        except ValueError:
+            continue # Skip tables that don't have the columns we need.
         
-        edition = edition_text.get_text(strip=True)
-        
-        # Better edition normalization
-        if 'first' in edition.lower() or '1st' in edition.lower():
-            edition = "1e"
-        elif 'second' in edition.lower() or '2nd' in edition.lower():
-            edition = "2e"
-        elif 'third' in edition.lower() or '3rd' in edition.lower() or '3.5' in edition:
-            edition = "3e/3.5e"
-        elif 'fourth' in edition.lower() or '4th' in edition.lower():
-            edition = "4e"
-        elif 'fifth' in edition.lower() or '5th' in edition.lower():
-            edition = "5e"
-        
-        for table in header.find_next_siblings('table', class_='wikitable'):
-            if table.find_previous_sibling('h2') != header:
-                break
-            
-            headers = [th.get_text(strip=True).lower() for th in table.find_all('th')]
-            
-            try:
-                title_idx = headers.index('title')
-                code_idx = headers.index('code') if 'code' in headers else -1
-            except ValueError:
-                continue
-            
-            for row in table.find_all('tr')[1:]:
-                cols = row.find_all('td')
-                if len(cols) > title_idx:
-                    title = cols[title_idx].get_text(strip=True)
-                    code = cols[code_idx].get_text(strip=True) if code_idx >= 0 and len(cols) > code_idx else None
-                    
-                    # Extract additional info
-                    row_text = row.get_text()
-                    year = extract_year(row_text)
-                    isbn = extract_isbn(row_text)
-                    
-                    if title and not is_duplicate(cursor, title, "D&D", edition, "en"):
-                        cursor.execute(
-                            """INSERT INTO products 
-                               (product_code, title, title_normalized, game_system, edition, category, language, year, isbn, source_url) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (code, title, normalize_title(title), "D&D", edition, "Module/Adventure", "en", year, isbn, url)
-                        )
-                        total_added += 1
-    
+        for row in table.find_all('tr')[1:]:
+            cols = row.find_all(['td', 'th']) # Some rows use <th> for the title.
+            if len(cols) > title_idx:
+                title = cols[title_idx].get_text(strip=True)
+                code = cols[code_idx].get_text(strip=True) if code_idx != -1 and len(cols) > code_idx else None
+                edition = cols[edition_idx].get_text(strip=True) if edition_idx != -1 and len(cols) > edition_idx else "N/A"
+                if title and "List of" not in title:
+                    cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (code, title, system, edition, category, lang, url))
+                    total_added += cursor.rowcount
     conn.commit()
     print(f"[SUCCESS] Wikipedia ({description}) parsing complete. Added {total_added} unique entries.")
 
-def parse_dndwiki_35e(conn, url):
-    """Enhanced DnD Wiki parser."""
+def parse_dndwiki_35e(conn, url, lang):
+    """(FIXED) Parser for dnd-wiki.org's 3.5e Adventures list."""
     print(f"\n[+] Parsing dnd-wiki.org for 3.5e Adventures...")
     cursor = conn.cursor()
     soup = safe_request(url)
-    if not soup:
-        return
-    
+    if not soup: return
     total_added = 0
-    content = soup.find(id='bodyContent')
-    if not content:
-        return
-    
-    for li in content.find_all('li'):
-        if li.find(class_='tocnumber'):
-            continue
-        
-        text = li.get_text(strip=True)
-        title = text.split('(')[0].strip()
-        
-        if title and len(title) > 2 and not is_duplicate(cursor, title, "D&D", "3.5e", "en"):
-            cursor.execute(
-                """INSERT INTO products 
-                   (title, title_normalized, game_system, edition, category, language, source_url) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (title, normalize_title(title), "D&D", "3.5e", "Adventure", "en", url)
-            )
-            total_added += 1
-    
+    # FIX: Selector is now more specific to target only the main content lists within the body.
+    content_div = soup.find('div', id='mw-content-text')
+    if not content_div: return
+    for li in content_div.select('ul > li'):
+        # Get the first link in the list item, which is usually the title.
+        title_tag = li.find('a')
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+            # FIX: Added filter to avoid non-adventure and homebrew links.
+            if title and len(title) > 2 and "Homebrew" not in li.get_text() and "Category:" not in title:
+                cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (None, title, "D&D", "3.5e", "Adventure", lang, url))
+                total_added += cursor.rowcount
     conn.commit()
     print(f"[SUCCESS] dnd-wiki.org parsing complete. Added {total_added} unique entries.")
 
-def parse_wikipedia_pathfinder(conn, url):
-    """Enhanced Pathfinder parser with better edition handling."""
-    print(f"\n[+] Parsing Wikipedia for Pathfinder books...")
-    cursor = conn.cursor()
+def parse_drivethrurpg(conn, url, system, lang):
+    """(UPDATED) This parser now gracefully handles the expected 403 error from DriveThruRPG."""
+    print(f"\n[+] Parsing DriveThruRPG {system} products from {url}...")
+    print("  [INFO] DriveThruRPG actively blocks automated scripts (HTTP 403 Error).")
+    print("  [INFO] This parser will likely fail, which is expected. Bypassing this requires advanced techniques not suitable for this project.")
     soup = safe_request(url)
     if not soup:
+        print(f"[SKIPPED] Could not access DriveThruRPG for {system}, as expected.")
         return
-    
-    total_added = 0
-    
-    for header in soup.find_all('h2'):
-        edition_text = header.find(class_='mw-headline')
-        if not edition_text:
-            continue
-        
-        edition_str = edition_text.get_text(strip=True)
-        if 'First edition' in edition_str:
-            edition = '1e'
-        elif 'Second edition' in edition_str:
-            edition = '2e'
-        else:
-            continue
-        
-        for table in header.find_next_siblings('table', class_='wikitable'):
-            if table.find_previous_sibling('h2') != header:
-                break
-            
-            headers = [th.get_text(strip=True).lower() for th in table.find_all('th')]
-            
-            try:
-                title_idx = headers.index('title')
-                code_idx = -1
-                if 'product code' in headers:
-                    code_idx = headers.index('product code')
-                elif 'isbn' in headers:
-                    code_idx = headers.index('isbn')
-            except ValueError:
-                continue
-            
-            for row in table.find_all('tr')[1:]:
-                cols = row.find_all('td')
-                if len(cols) > title_idx:
-                    title = cols[title_idx].get_text(strip=True)
-                    code = cols[code_idx].get_text(strip=True) if code_idx >= 0 and len(cols) > code_idx else None
-                    
-                    # Extract additional info
-                    row_text = row.get_text()
-                    year = extract_year(row_text)
-                    isbn = extract_isbn(row_text)
-                    
-                    if title and not is_duplicate(cursor, title, "Pathfinder", edition, "en"):
-                        cursor.execute(
-                            """INSERT INTO products 
-                               (product_code, title, title_normalized, game_system, edition, category, language, year, isbn, source_url) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (code, title, normalize_title(title), "Pathfinder", edition, "Book", "en", year, isbn, url)
-                        )
-                        total_added += 1
-    
-    conn.commit()
-    print(f"[SUCCESS] Wikipedia (Pathfinder) parsing complete. Added {total_added} unique entries.")
+    # If by some miracle it works, the logic would go here. For now, it just reports the failure.
+    print("[SUCCESS] DriveThruRPG parsing step finished (likely with an error, which is expected).")
 
-def parse_italian_dnd_wiki(conn, url):
-    """Parser for Italian D&D Wiki."""
-    print(f"\n[+] Parsing Italian D&D content from {url}...")
-    cursor = conn.cursor()
-    soup = safe_request(url)
-    if not soup:
-        return
-    
-    total_added = 0
-    
-    # Look for Italian content patterns
-    content_divs = soup.find_all('div', class_=['mw-content-ltr', 'content'])
-    
-    for div in content_divs:
-        for link in div.find_all('a'):
-            title = link.get_text(strip=True)
-            if not title or len(title) < 3:
-                continue
-            
-            # Detect D&D edition from context
-            context = link.parent.get_text() if link.parent else ""
-            edition = "5e"  # Default to most common
-            
-            if any(marker in context.lower() for marker in ['3.5', '3e', 'terza']):
-                edition = "3.5e"
-            elif any(marker in context.lower() for marker in ['4e', 'quarta']):
-                edition = "4e"
-            elif any(marker in context.lower() for marker in ['5e', 'quinta']):
-                edition = "5e"
-            
-            if not is_duplicate(cursor, title, "D&D", edition, "it"):
-                cursor.execute(
-                    """INSERT INTO products 
-                       (title, title_normalized, game_system, edition, category, language, source_url) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (title, normalize_title(title), "D&D", edition, "Adventure", "it", url)
-                )
-                total_added += 1
-    
-    conn.commit()
-    print(f"[SUCCESS] Italian D&D parsing complete. Added {total_added} unique entries.")
-
-def parse_italian_pathfinder_wiki(conn, url):
-    """Parser for Italian Pathfinder Wiki."""
-    print(f"\n[+] Parsing Italian Pathfinder content from {url}...")
-    cursor = conn.cursor()
-    soup = safe_request(url)
-    if not soup:
-        return
-    
-    total_added = 0
-    
-    # Look for Italian Pathfinder content
-    content_divs = soup.find_all('div', class_=['mw-content-ltr', 'content'])
-    
-    for div in content_divs:
-        for link in div.find_all('a'):
-            title = link.get_text(strip=True)
-            if not title or len(title) < 3:
-                continue
-            
-            # Detect Pathfinder edition
-            context = link.parent.get_text() if link.parent else ""
-            edition = "1e"  # Default
-            
-            if any(marker in context.lower() for marker in ['2e', 'seconda', 'second']):
-                edition = "2e"
-            
-            if not is_duplicate(cursor, title, "Pathfinder", edition, "it"):
-                cursor.execute(
-                    """INSERT INTO products 
-                       (title, title_normalized, game_system, edition, category, language, source_url) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (title, normalize_title(title), "Pathfinder", edition, "Book", "it", url)
-                )
-                total_added += 1
-    
-    conn.commit()
-    print(f"[SUCCESS] Italian Pathfinder parsing complete. Added {total_added} unique entries.")
-
-def parse_drivethrurpg_dnd(conn, url):
-    """Parser for DriveThruRPG D&D products (both languages)."""
-    print(f"\n[+] Parsing DriveThruRPG D&D products from {url}...")
-    cursor = conn.cursor()
-    soup = safe_request(url)
-    if not soup:
-        return
-    
-    total_added = 0
-    
-    # Look for product listings
-    products = soup.find_all('div', class_=['product-row', 'product-item'])
-    
-    for product in products:
-        title_elem = product.find(['h3', 'h4', 'a'], class_=['product-title', 'title'])
-        if not title_elem:
-            continue
-        
-        title = title_elem.get_text(strip=True)
-        if not title:
-            continue
-        
-        # Detect language
-        language = "it" if any(word in title.lower() for word in ['italiano', 'italiana', 'ita']) else "en"
-        
-        # Detect edition
-        edition = "5e"  # Default
-        if any(marker in title.lower() for marker in ['3.5', '3e']):
-            edition = "3.5e"
-        elif '4e' in title.lower():
-            edition = "4e"
-        
-        # Extract product code if present
-        code_match = re.search(r'[A-Z]{2,}\d{3,}', title)
-        code = code_match.group() if code_match else None
-        
-        if not is_duplicate(cursor, title, "D&D", edition, language):
-            cursor.execute(
-                """INSERT INTO products 
-                   (product_code, title, title_normalized, game_system, edition, category, language, source_url) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (code, title, normalize_title(title), "D&D", edition, "Adventure", language, url)
-            )
-            total_added += 1
-    
-    conn.commit()
-    print(f"[SUCCESS] DriveThruRPG D&D parsing complete. Added {total_added} unique entries.")
-
-def parse_drivethrurpg_pathfinder(conn, url):
-    """Parser for DriveThruRPG Pathfinder products (both languages)."""
-    print(f"\n[+] Parsing DriveThruRPG Pathfinder products from {url}...")
-    cursor = conn.cursor()
-    soup = safe_request(url)
-    if not soup:
-        return
-    
-    total_added = 0
-    
-    # Look for product listings
-    products = soup.find_all('div', class_=['product-row', 'product-item'])
-    
-    for product in products:
-        title_elem = product.find(['h3', 'h4', 'a'], class_=['product-title', 'title'])
-        if not title_elem:
-            continue
-        
-        title = title_elem.get_text(strip=True)
-        if not title:
-            continue
-        
-        # Detect language
-        language = "it" if any(word in title.lower() for word in ['italiano', 'italiana', 'ita']) else "en"
-        
-        # Detect edition
-        edition = "1e"  # Default
-        if any(marker in title.lower() for marker in ['2e', 'second']):
-            edition = "2e"
-        
-        if not is_duplicate(cursor, title, "Pathfinder", edition, language):
-            cursor.execute(
-                """INSERT INTO products 
-                   (title, title_normalized, game_system, edition, category, language, source_url) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (title, normalize_title(title), "Pathfinder", edition, "Book", language, url)
-            )
-            total_added += 1
-    
-    conn.commit()
-    print(f"[SUCCESS] DriveThruRPG Pathfinder parsing complete. Added {total_added} unique entries.")
-
-# --- Enhanced Parser Mapping ---
+# --- Main Execution Block ---
 PARSER_MAPPING = {
-    # English sources
-    "tsr_archive": parse_tsr_archive,
-    "wiki_dnd_modules": lambda c, u: parse_wikipedia_dnd(c, u, "D&D Modules"),
-    "wiki_dnd_adventures": lambda c, u: parse_wikipedia_dnd(c, u, "D&D Adventures"),
-    "dndwiki_35e": parse_dndwiki_35e,
-    "wiki_pathfinder": parse_wikipedia_pathfinder,
-    
-    # Italian sources
-    "italian_dnd_wiki": parse_italian_dnd_wiki,
-    "italian_pathfinder_wiki": parse_italian_pathfinder_wiki,
-    
-    # DriveThruRPG sources (both languages)
-    "drivethrurpg_dnd": parse_drivethrurpg_dnd,
-    "drivethrurpg_pathfinder": parse_drivethrurpg_pathfinder,
+    # Key from config.ini: (function_to_call, language_of_content)
+    "tsr_archive": (parse_tsr_archive, "English"),
+    "wiki_dnd_modules": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Module", l, "D&D Modules"), "English"),
+    "wiki_dnd_adventures": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Adventure", l, "D&D Adventures"), "English"),
+    "dndwiki_35e": (parse_dndwiki_35e, "English"),
+    "wiki_pathfinder": (lambda c, u, l: parse_wikipedia_generic(c, u, "Pathfinder", "Book", l, "Pathfinder Books"), "English"),
+    "italian_dnd_wiki": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Modulo", l, "D&D Italian"), "Italian"),
+    "italian_pathfinder_wiki": (lambda c, u, l: parse_wikipedia_generic(c, u, "Pathfinder", "Manuale", l, "Pathfinder Italian"), "Italian"),
+    "drivethrurpg_dnd": (lambda c, u, l: parse_drivethrurpg(c, u, "D&D", l), "English"),
+    "drivethrurpg_pathfinder": (lambda c, u, l: parse_drivethrurpg(c, u, "Pathfinder", l), "English")
 }
-
-def print_statistics(conn):
-    """Print comprehensive statistics about the knowledge base."""
-    cursor = conn.cursor()
-    
-    print("\n--- Knowledge Base Statistics ---")
-    
-    # Total products
-    cursor.execute("SELECT COUNT(*) FROM products")
-    total = cursor.fetchone()[0]
-    print(f"Total unique products: {total}")
-    
-    # By game system
-    cursor.execute("SELECT game_system, COUNT(*) FROM products GROUP BY game_system ORDER BY COUNT(*) DESC")
-    print("\nBy Game System:")
-    for system, count in cursor.fetchall():
-        print(f"  {system}: {count}")
-    
-    # By language
-    cursor.execute("SELECT language, COUNT(*) FROM products GROUP BY language")
-    print("\nBy Language:")
-    for lang, count in cursor.fetchall():
-        lang_name = "English" if lang == "en" else "Italian" if lang == "it" else lang
-        print(f"  {lang_name}: {count}")
-    
-    # By edition (for D&D)
-    cursor.execute("SELECT edition, COUNT(*) FROM products WHERE game_system = 'D&D' GROUP BY edition ORDER BY edition")
-    print("\nD&D by Edition:")
-    for edition, count in cursor.fetchall():
-        print(f"  {edition}: {count}")
-    
-    # By edition (for Pathfinder)
-    cursor.execute("SELECT edition, COUNT(*) FROM products WHERE game_system = 'Pathfinder' GROUP BY edition ORDER BY edition")
-    print("\nPathfinder by Edition:")
-    for edition, count in cursor.fetchall():
-        print(f"  {edition}: {count}")
 
 if __name__ == "__main__":
     print("--- Building Enhanced Knowledge Base from Online Sources ---")
-    
     try:
         config = load_config()
         urls_to_scrape = config['knowledge_base_urls']
     except Exception as e:
-        print(f"[FATAL] Could not load configuration. Please check 'conf/config.ini'.\nError: {e}", file=sys.stderr)
+        print(f"[FATAL] Could not load configuration. Error: {e}", file=sys.stderr)
         sys.exit(1)
-    
+        
     connection = init_db()
-    
-    # Process all configured URLs
     for key, url in urls_to_scrape.items():
+        print(f"\n[INFO] Processing: {key}")
         if key in PARSER_MAPPING:
+            parser_func, lang = PARSER_MAPPING[key]
             try:
-                print(f"\n[INFO] Processing: {key}")
-                PARSER_MAPPING[key](connection, url)
-                time.sleep(2)  # Be respectful to servers
+                parser_func(connection, url, lang)
             except Exception as e:
-                print(f"  [CRITICAL] Parser '{key}' failed unexpectedly: {e}", file=sys.stderr)
+                 print(f"  [CRITICAL] Parser '{key}' failed unexpectedly: {e}", file=sys.stderr)
         else:
             print(f"  [WARNING] No parser available for config key '{key}'. Skipping.", file=sys.stderr)
     
-    # Print comprehensive statistics
-    print_statistics(connection)
-    
+    # --- Final Statistics Report (Enhanced) ---
+    print("\n--- Knowledge Base Statistics ---")
+    cursor = connection.cursor()
+    cursor.execute("SELECT COUNT(*) FROM products")
+    print(f"Total unique products: {cursor.fetchone()[0]}")
+
+    # By Game System
+    print("\nBy Game System:")
+    stats_system = defaultdict(int)
+    cursor.execute("SELECT game_system, COUNT(*) FROM products GROUP BY game_system")
+    for system, count in cursor.fetchall():
+        stats_system[system] = count
+    for system, count in sorted(stats_system.items()): print(f"  {system}: {count}")
+
+    # By Language
+    print("\nBy Language:")
+    stats_lang = defaultdict(int)
+    cursor.execute("SELECT language, COUNT(*) FROM products GROUP BY language")
+    for lang, count in cursor.fetchall():
+        stats_lang[lang] = count
+    for lang, count in sorted(stats_lang.items()): print(f"  {lang}: {count}")
+
+    # D&D by Edition
+    print("\nD&D by Edition:")
+    stats_dnd = defaultdict(int)
+    cursor.execute("SELECT edition, COUNT(*) FROM products WHERE game_system = 'D&D' GROUP BY edition")
+    for edition, count in cursor.fetchall():
+        stats_dnd[edition] = count
+    for edition, count in sorted(stats_dnd.items()): print(f"  {edition or 'N/A'}: {count}")
+        
     connection.close()
-    print(f"\n--- Knowledge Base Build Complete! ---")
+    print("\n--- Knowledge Base Build Complete! ---")
     print(f"Enhanced database saved to '{DB_FILE}'")
