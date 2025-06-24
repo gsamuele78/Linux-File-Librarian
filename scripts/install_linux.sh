@@ -3,22 +3,11 @@ set -e
 echo "--- Linux File Librarian Installer ---"
 
 # --- 1. System Package Installation ---
-echo "[INFO] Installing system dependencies (pip, tk, venv, git, libmagic, wget)..."
+echo "[INFO] Installing system dependencies (pip, tk, venv, git, libmagic)..."
 sudo apt-get update
-sudo apt-get install -y python3-pip python3-tk python3-venv git libmagic1 wget
+sudo apt-get install -y python3-pip python3-tk python3-venv git libmagic1
 
-# --- 2. Selenium Dependency: Google Chrome ---
-if ! command -v google-chrome-stable &> /dev/null
-then
-    echo "[INFO] Google Chrome not found. Installing..."
-    wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -P /tmp
-    sudo apt install -y /tmp/google-chrome-stable_current_amd64.deb
-    rm /tmp/google-chrome-stable_current_amd64.deb
-else
-    echo "[INFO] Google Chrome is already installed."
-fi
-
-# --- 3. Python Environment Setup ---
+# --- 2. Python Environment Setup ---
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 PROJECT_ROOT="$SCRIPT_DIR/.."
 VENV_PATH="$PROJECT_ROOT/venv"
