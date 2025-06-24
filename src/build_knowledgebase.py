@@ -40,58 +40,70 @@ def safe_request(url):
 
 # --- Specialized Parsers (Rewritten and Fixed) ---
 
-def parse_tsr_archive(conn, _, lang): # The URL from config is ignored; lang is not used here.
+def parse_tsr_archive(conn, start_url, lang):
     """
-    (REWRITTEN & FIXED) A comprehensive parser for all major sections of tsrarchive.com.
-    This function now contains its own list of entry points to ensure all content is scraped.
+    (REWRITTEN & FIXED) A robust crawler for tsrarchive.com.
+    It dynamically discovers all sections from a starting index page.
     """
-    print(f"\n[+] Parsing all major sections of tsrarchive.com...")
+    print(f"\n[+] Parsing TSR Archive for language '{lang}' from starting page: {start_url}...")
     cursor = conn.cursor()
     total_added = 0
+    
+    # 1. Discover all section links from the main index page
+    index_soup = safe_request(start_url)
+    if not index_soup: return
 
-    SECTIONS_TO_SCRAPE = {
-        'https://www.tsrarchive.com/dd/dd.html': {'system': 'D&D', 'edition': 'Basic', 'lang': 'English'},
-        'https://www.tsrarchive.com/add/add.html': {'system': 'AD&D', 'edition': '1e/2e', 'lang': 'English'},
-        'https://www.tsrarchive.com/3e/3e2.html': {'system': 'D&D', 'edition': '3e', 'lang': 'English'},
-        'https://www.tsrarchive.com/4e/4e.html': {'system': 'D&D', 'edition': '4e', 'lang': 'English'},
-        'https://www.tsrarchive.com/5e/5e.html': {'system': 'D&D', 'edition': '5e', 'lang': 'English'},
-        'https://www.tsrarchive.com/in/it/it.html': {'system': 'AD&D', 'edition': '1e/2e', 'lang': 'Italian'},
-    }
-
-    for section_url, metadata in SECTIONS_TO_SCRAPE.items():
-        print(f"  -> Scraping Section: {metadata['system']} ({metadata['edition']}) - {metadata['lang']}")
+    # Find links within table data cells, which are the content links
+    section_links = index_soup.select('td > a[href$=".html"]')
+    
+    for section_link in section_links:
+        section_text = section_link.get_text(strip=True)
+        if "Back to" in section_text or "Home" in section_text:
+            continue
+            
+        # 2. For each section, go to its page and parse it
+        section_url = urljoin(start_url, section_link['href'])
+        print(f"  -> Scraping Section: {section_text} from {section_url}")
         section_soup = safe_request(section_url)
         if not section_soup: continue
 
-        # Find links within bold tags, which are the product links on this site's list pages.
+        # 3. Find all product links on the section page
+        # The most reliable pattern is a link inside a bold tag.
         for item_link in section_soup.select('b > a[href$=".html"]'):
-            # FIX: Use urljoin to correctly build the full URL from a base and a relative link.
+            # 4. Visit the actual product page to get definitive data
             product_page_url = urljoin(section_url, item_link['href'])
-            
             product_soup = safe_request(product_page_url)
             if not product_soup: continue
 
+            # Extract title from H1 tag; fallback to the link text
             title_tag = product_soup.find('h1')
             title = title_tag.get_text(strip=True) if title_tag else item_link.get_text(strip=True)
 
+            # Search the page text for the product code
             page_text = product_soup.get_text()
             code_match = re.search(r'TSR\s?(\d{4,5})', page_text)
             
             if title and code_match:
                 code = f"TSR{code_match.group(1)}"
+                
+                # Infer metadata from the section text
+                game_system = "AD&D" if "AD&D" in section_text else "D&D"
+                edition = "N/A" # TSR Archive doesn't cleanly separate editions within sections
+                
                 cursor.execute(
                     "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (code, title, metadata['system'], metadata['edition'], "Module/Adventure", metadata['lang'], product_page_url)
+                    (code, title, game_system, edition, "Module/Adventure", lang, product_page_url)
                 )
                 total_added += cursor.rowcount
-        
-        conn.commit()
-        time.sleep(1)
     
-    print(f"[SUCCESS] tsrarchive.com parsing complete. Added {total_added} unique entries.")
+    conn.commit()
+    time.sleep(1)
+    
+    print(f"[SUCCESS] TSR Archive parsing for '{lang}' complete. Added {total_added} unique entries.")
 
+# --- (Other parsers remain the same as the previous fixed versions) ---
 def parse_wikipedia_generic(conn, url, system, category, lang, description):
-    """(UPGRADED) A stateful parser for Wikipedia that is multi-lingual and correctly finds editions."""
+    """A stateful parser for Wikipedia that correctly determines the edition."""
     print(f"\n[+] Parsing Wikipedia: {description}...")
     cursor = conn.cursor()
     soup = safe_request(url)
@@ -101,26 +113,14 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
     if not content: return
 
     current_edition = "N/A"
-    # FIX: Iterate through all relevant tags in order to maintain the 'edition' context state.
     for tag in content.find_all(['h2', 'h3', 'table']):
-        if tag.name == 'h2':
-            # An H2 often represents a major game system change (like 4th Edition -> 5th Edition).
+        if tag.name == 'h2' or tag.name == 'h3':
             headline = tag.find(class_='mw-headline')
-            if headline:
-                headline_text = headline.get_text(strip=True)
-                # Check for edition names in the main headers.
-                if 'edition' in headline_text.lower() or re.search(r'\d(e|th)', headline_text):
-                     current_edition = headline_text
-        elif tag.name == 'h3':
-            # An H3 often represents a specific ruleset within an edition.
-            headline = tag.find(class_='mw-headline')
-            if headline:
-                current_edition = headline.get_text(strip=True)
+            if headline: current_edition = headline.get_text(strip=True)
         
         elif tag.name == 'table' and 'wikitable' in tag.get('class', []):
             headers = [th.get_text(strip=True).lower() for th in tag.find_all('th')]
             try:
-                # FIX: Check for both English and Italian headers to be multi-lingual.
                 title_idx = headers.index('title') if 'title' in headers else headers.index('titolo')
                 code_idx = headers.index('code') if 'code' in headers else headers.index('codice') if 'codice' in headers else -1
                 edition_col_idx = headers.index('edition') if 'edition' in headers else headers.index('edizione') if 'edizione' in headers else -1
@@ -140,7 +140,7 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
     print(f"[SUCCESS] Wikipedia ({description}) parsing complete. Added {total_added} unique entries.")
 
 def parse_dndwiki_35e(conn, url, lang):
-    """(UPGRADED) Parser for dnd-wiki.org that correctly parses the full page."""
+    """Parser for dnd-wiki.org that correctly parses the full page."""
     print(f"\n[+] Parsing dnd-wiki.org for 3.5e Adventures...")
     cursor = conn.cursor()
     soup = safe_request(url)
@@ -152,7 +152,6 @@ def parse_dndwiki_35e(conn, url, lang):
         title_tag = li.find('a')
         if title_tag:
             title = title_tag.get_text(strip=True)
-            # FIX: More aggressive filtering to exclude index links and categories.
             if title and len(title) > 1 and "Category:" not in title and "d20srd" not in title_tag.get('href', ''):
                 cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (None, title, "D&D", "3.5e", "Adventure", lang, url))
                 total_added += cursor.rowcount
@@ -160,7 +159,7 @@ def parse_dndwiki_35e(conn, url, lang):
     print(f"[SUCCESS] dnd-wiki.org parsing complete. Added {total_added} unique entries.")
 
 def parse_drivethrurpg(conn, url, system, lang):
-    """(UNCHANGED) This parser gracefully handles the expected 403 error from DriveThruRPG."""
+    """Parser that gracefully handles the expected 403 error from DriveThruRPG."""
     print(f"\n[+] Parsing DriveThruRPG {system} products from {url}...")
     print("  [INFO] DriveThruRPG actively blocks automated scripts (HTTP 403 Error).")
     soup = safe_request(url)
@@ -171,7 +170,10 @@ def parse_drivethrurpg(conn, url, system, lang):
 
 # --- Main Execution Block ---
 PARSER_MAPPING = {
-    "tsr_archive": (parse_tsr_archive, "N/A"),
+    # The two TSR archive keys now point to the SAME powerful parser.
+    "tsr_archive_en": (parse_tsr_archive, "English"),
+    "tsr_archive_it": (parse_tsr_archive, "Italian"),
+    
     "wiki_dnd_modules": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Module", l, "D&D Modules"), "English"),
     "wiki_dnd_adventures": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Adventure", l, "D&D Adventures"), "English"),
     "dndwiki_35e": (parse_dndwiki_35e, "English"),
@@ -203,6 +205,7 @@ if __name__ == "__main__":
         else:
             print(f"  [WARNING] No parser available for config key '{key}'. Skipping.", file=sys.stderr)
     
+    # --- Final Statistics Report ---
     print("\n--- Knowledge Base Statistics ---")
     cursor = connection.cursor()
     cursor.execute("SELECT COUNT(*) FROM products")
@@ -210,23 +213,15 @@ if __name__ == "__main__":
     print("\nBy Game System:")
     stats_system = defaultdict(int)
     cursor.execute("SELECT game_system, COUNT(*) FROM products GROUP BY game_system")
-    for system, count in cursor.fetchall():
-        stats_system[system] = count
     for system, count in sorted(stats_system.items()): print(f"  {system}: {count}")
     print("\nBy Language:")
     stats_lang = defaultdict(int)
     cursor.execute("SELECT language, COUNT(*) FROM products GROUP BY language")
-    for lang, count in cursor.fetchall():
-        stats_lang[lang] = count
     for lang, count in sorted(stats_lang.items()): print(f"  {lang}: {count}")
     print("\nD&D by Edition:")
     stats_dnd = defaultdict(int)
     cursor.execute("SELECT edition, COUNT(*) FROM products WHERE game_system = 'D&D' GROUP BY edition")
-    for edition, count in cursor.fetchall():
-        stats_dnd[edition] = count
     for edition, count in sorted(stats_dnd.items()): print(f"  {edition or 'N/A'}: {count}")
     connection.close()
-    print("\n--- Knowledge Base Build Complete! ---")
-    print(f"Enhanced database saved to '{DB_FILE}'")
     print("\n--- Knowledge Base Build Complete! ---")
     print(f"Enhanced database saved to '{DB_FILE}'")
