@@ -14,5 +14,7 @@ source "$PROJECT_ROOT/venv/bin/activate"
 
 echo "[INFO] Running the knowledge base builder..."
 # Run the python script from the project root to ensure relative paths are correct.
+export PYTHONPATH="$PWD"
+
 cd "$PROJECT_ROOT"
 python3 src/build_knowledgebase.py
