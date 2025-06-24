@@ -1,20 +1,19 @@
-      
 #!/usr/bin/env bash
 set -e
 echo "--- Linux File Librarian Installer ---"
 
 # --- 1. System Package Installation ---
-echo "[INFO] Installing system dependencies (pip, tk, venv, git, libmagic)..."
+echo "[INFO] Installing system dependencies (pip, tk, venv, git, libmagic, wget)..."
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-tk python3-venv git libmagic1 wget
 
 # --- 2. Selenium Dependency: Google Chrome ---
-if ! command -v google-chrome &> /dev/null
+if ! command -v google-chrome-stable &> /dev/null
 then
     echo "[INFO] Google Chrome not found. Installing..."
-    wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-    sudo apt install -y ./google-chrome-stable_current_amd64.deb
-    rm google-chrome-stable_current_amd64.deb
+    wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -P /tmp
+    sudo apt install -y /tmp/google-chrome-stable_current_amd64.deb
+    rm /tmp/google-chrome-stable_current_amd64.deb
 else
     echo "[INFO] Google Chrome is already installed."
 fi
@@ -41,5 +40,3 @@ chmod +x "$PROJECT_ROOT/scripts/"*.sh
 echo ""
 echo "--- Installation Complete! ---"
 echo "IMPORTANT: Please edit 'conf/config.ini' with your custom paths before running."
-
-    
