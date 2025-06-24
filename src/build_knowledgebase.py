@@ -6,6 +6,7 @@ import os
 import time
 import sys
 from collections import defaultdict
+from urllib.parse import urljoin
 from src.config_loader import load_config
 
 # --- Configuration ---
@@ -37,36 +38,63 @@ def safe_request(url):
         print(f"  [ERROR] Could not fetch {url}. Reason: {e}", file=sys.stderr)
         return None
 
-# --- Specialized Parsers (Rewritten for Robustness) ---
+# --- Specialized Parsers (Rewritten and Fixed) ---
 
-def parse_tsr_archive(conn, url, lang):
-    """(REWRITTEN) Parser for tsrarchive.com. Now correctly finds and filters links."""
-    print(f"\n[+] Parsing tsrarchive.com from {url}...")
-    base_url = "http://www.tsrarchive.com/"
+def parse_tsr_archive(conn, _, lang): # The URL from config is ignored; lang is not used here.
+    """
+    (REWRITTEN & FIXED) A comprehensive parser for all major sections of tsrarchive.com.
+    This function now contains its own list of entry points to ensure all content is scraped.
+    """
+    print(f"\n[+] Parsing all major sections of tsrarchive.com...")
     cursor = conn.cursor()
-    soup = safe_request(url)
-    if not soup: return
     total_added = 0
-    # FIX: Instead of a fragile CSS selector, find all links and filter them in Python.
-    for link in soup.find_all('a', href=True):
-        link_text = link.get_text(strip=True)
-        # FIX: More robust filtering of irrelevant navigation links.
-        if link['href'].endswith('.html') and link_text and "Back to" not in link_text and "Home" not in link_text:
-            sub_page_url = base_url + link['href']
-            game_system = link_text
-            print(f"  -> Scraping system: {game_system}")
-            sub_soup = safe_request(sub_page__url)
-            if not sub_soup: continue
-            for item in sub_soup.select('b a[href*=".html"]'):
-                title = item.get_text(strip=True)
-                # FIX: Make the regex more general to catch codes without spaces.
-                code_match = re.search(r'\((TSR\d{4,5})\)', item.parent.get_text())
-                if title and code_match:
-                    code = code_match.group(1)
-                    cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (code, title, game_system, "1e/2e", "Module/Adventure", lang, sub_page_url))
-                    total_added += cursor.rowcount
-    conn.commit()
-    time.sleep(1)
+
+    # This mapping defines the sections to scrape and their corresponding metadata.
+    # This makes the parser comprehensive and easy to extend.
+    SECTIONS_TO_SCRAPE = {
+        'https://www.tsrarchive.com/dd/dd.html': {'system': 'D&D', 'edition': 'Basic', 'lang': 'English'},
+        'https://www.tsrarchive.com/add/add.html': {'system': 'AD&D', 'edition': '1e/2e', 'lang': 'English'},
+        'https://www.tsrarchive.com/3e/3e2.html': {'system': 'D&D', 'edition': '3e', 'lang': 'English'},
+        'https://www.tsrarchive.com/4e/4e.html': {'system': 'D&D', 'edition': '4e', 'lang': 'English'},
+        'https://www.tsrarchive.com/5e/5e.html': {'system': 'D&D', 'edition': '5e', 'lang': 'English'},
+        'https://www.tsrarchive.com/in/it/it.html': {'system': 'AD&D', 'edition': '1e/2e', 'lang': 'Italian'},
+    }
+
+    for section_url, metadata in SECTIONS_TO_SCRAPE.items():
+        print(f"  -> Scraping Section: {metadata['system']} ({metadata['edition']}) - {metadata['lang']}")
+        section_soup = safe_request(section_url)
+        if not section_soup: continue
+
+        # Find links within bold tags, which are the product links on this site's list pages.
+        for item_link in section_soup.select('b > a[href$=".html"]'):
+            # FIX: Use urljoin to correctly build the full URL from a base and a relative link.
+            # This robustly handles links like "../../dl/dl.html" and prevents 404 errors.
+            product_page_url = urljoin(section_url, item_link['href'])
+            
+            # Now, visit the actual product page to get definitive info. This is more reliable.
+            product_soup = safe_request(product_page_url)
+            if not product_soup: continue
+
+            # Extract title from the product page's H1 tag.
+            title_tag = product_soup.find('h1')
+            title = title_tag.get_text(strip=True) if title_tag else item_link.get_text(strip=True)
+
+            # Search the entire text of the product page for the TSR code.
+            page_text = product_soup.get_text()
+            code_match = re.search(r'TSR\s?(\d{4,5})', page_text)
+            
+            if title and code_match:
+                # Reconstruct the code with "TSR" prefix for consistency.
+                code = f"TSR{code_match.group(1)}"
+                cursor.execute(
+                    "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (code, title, metadata['system'], metadata['edition'], "Module/Adventure", metadata['lang'], product_page_url)
+                )
+                total_added += cursor.rowcount
+        
+        conn.commit()
+        time.sleep(1) # Be a good internet citizen.
+    
     print(f"[SUCCESS] tsrarchive.com parsing complete. Added {total_added} unique entries.")
 
 def parse_wikipedia_generic(conn, url, system, category, lang, description):
@@ -82,11 +110,8 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
     current_edition = "N/A"
     # FIX: Iterate through all relevant tags in order to maintain the 'edition' context.
     for tag in content.find_all(['h2', 'h3', 'table']):
-        if tag.name == 'h2':
-            # An H2 tag resets the context.
-            current_edition = "N/A"
-        elif tag.name == 'h3':
-            # An H3 tag sets the new edition context.
+        if tag.name == 'h3':
+            # An H3 tag often sets the new edition context.
             headline = tag.find(class_='mw-headline')
             if headline:
                 current_edition = headline.get_text(strip=True)
@@ -97,7 +122,6 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
             try:
                 title_idx = headers.index('title') if 'title' in headers else headers.index('titolo')
                 code_idx = headers.index('code') if 'code' in headers else headers.index('codice') if 'codice' in headers else -1
-                # Also try to get edition from inside the table as a fallback.
                 edition_col_idx = headers.index('edition') if 'edition' in headers else headers.index('edizione') if 'edizione' in headers else -1
             except ValueError: continue
             
@@ -106,10 +130,9 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
                 if len(cols) > title_idx:
                     title = cols[title_idx].get_text(strip=True)
                     code = cols[code_idx].get_text(strip=True) if code_idx != -1 and len(cols) > code_idx else None
-                    # Use edition from the column if available, otherwise use the one from the H3 header.
                     edition_in_table = cols[edition_col_idx].get_text(strip=True) if edition_col_idx != -1 and len(cols) > edition_col_idx else None
                     final_edition = edition_in_table or current_edition
-                    if title and "List of" not in title:
+                    if title and "List of" not in title and len(title) > 1:
                         cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (code, title, system, final_edition, category, lang, url))
                         total_added += cursor.rowcount
     conn.commit()
@@ -124,12 +147,10 @@ def parse_dndwiki_35e(conn, url, lang):
     total_added = 0
     content_div = soup.find('div', id='mw-content-text')
     if not content_div: return
-    # FIX: Find all list items, then check their content, which is more robust.
     for li in content_div.find_all('li'):
         title_tag = li.find('a')
         if title_tag:
             title = title_tag.get_text(strip=True)
-            # FIX: More aggressive filtering to exclude index links and categories.
             if title and len(title) > 1 and "Category:" not in title and "d20srd" not in title_tag.get('href', ''):
                 cursor.execute("INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)", (None, title, "D&D", "3.5e", "Adventure", lang, url))
                 total_added += cursor.rowcount
@@ -137,7 +158,7 @@ def parse_dndwiki_35e(conn, url, lang):
     print(f"[SUCCESS] dnd-wiki.org parsing complete. Added {total_added} unique entries.")
 
 def parse_drivethrurpg(conn, url, system, lang):
-    """(UPDATED) This parser gracefully handles the 403 error from DriveThruRPG."""
+    """(UPDATED) This parser gracefully handles the expected 403 error from DriveThruRPG."""
     print(f"\n[+] Parsing DriveThruRPG {system} products from {url}...")
     print("  [INFO] DriveThruRPG actively blocks automated scripts (HTTP 403 Error).")
     soup = safe_request(url)
@@ -148,7 +169,7 @@ def parse_drivethrurpg(conn, url, system, lang):
 
 # --- Main Execution Block ---
 PARSER_MAPPING = {
-    "tsr_archive": (parse_tsr_archive, "English"),
+    "tsr_archive": (parse_tsr_archive, "N/A"), # Lang is handled internally by this parser
     "wiki_dnd_modules": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Module", l, "D&D Modules"), "English"),
     "wiki_dnd_adventures": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Adventure", l, "D&D Adventures"), "English"),
     "dndwiki_35e": (parse_dndwiki_35e, "English"),
@@ -160,7 +181,6 @@ PARSER_MAPPING = {
 }
 
 if __name__ == "__main__":
-    # (The main execution and statistics reporting block remains the same as the previous correct version)
     print("--- Building Enhanced Knowledge Base from Online Sources ---")
     try:
         config = load_config()
