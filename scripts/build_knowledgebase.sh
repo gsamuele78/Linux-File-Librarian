@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Activates the virtual environment and runs the knowledge base builder.
+# Only scrape sources that allow it (see robots.txt and terms).
+# Throttle requests to avoid being blocked.
 
 set -o errexit -o nounset -o pipefail
 
