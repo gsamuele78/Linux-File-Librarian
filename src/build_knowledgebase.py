@@ -8,7 +8,7 @@ import sys
 from collections import defaultdict
 from urllib.parse import urljoin
 
-# --- NEW IMPORTS FOR SELENIUM ---
+# --- SELENIUM IMPORTS ---
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -17,6 +17,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+# To get detailed error information from Selenium
+from selenium.common.exceptions import TimeoutException
 
 from src.config_loader import load_config
 
@@ -56,6 +58,8 @@ def setup_driver():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("user-agent=" + HEADERS['User-Agent'])
+    # Suppress verbose logging from WebDriver Manager
+    os.environ['WDM_LOG_LEVEL'] = '0'
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     print("  [INFO] Browser setup complete.")
@@ -65,7 +69,7 @@ def setup_driver():
 
 def parse_tsr_archive_selenium(conn, start_url, lang):
     """
-    (REWRITTEN WITH ROBUST SELENIUM) A crawler for tsrarchive.com that correctly handles frames.
+    (REWRITTEN WITH ROBUST FRAME DISCOVERY) A crawler for tsrarchive.com that correctly handles frames.
     """
     print(f"\n[+] Parsing TSR Archive with Selenium for '{lang}' from: {start_url}...")
     cursor = conn.cursor()
@@ -75,19 +79,31 @@ def parse_tsr_archive_selenium(conn, start_url, lang):
     try:
         driver = setup_driver()
         driver.get(start_url)
+        wait = WebDriverWait(driver, 20) # Use a 20-second "smart wait" timeout.
+
+        # FIX: Dynamically find and switch to the navigation frame.
+        print("  -> Discovering navigation frame...")
+        # Wait until at least one frame is loaded on the page.
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "frame")))
+        frames = driver.find_elements(By.TAG_NAME, "frame")
+        nav_frame_found = False
+        for frame in frames:
+            # Switch to any frame that looks like a navigation frame.
+            if 'nav' in (frame.get_attribute('name') or '') or 'nav' in (frame.get_attribute('src') or ''):
+                driver.switch_to.frame(frame)
+                nav_frame_found = True
+                print("  -> Switched to navigation frame.")
+                break
         
-        # FIX: Use a "smart wait" to ensure the frame is loaded before trying to access it.
-        # This waits up to 10 seconds for the frame named 'nav' to be available.
-        print("  -> Waiting for navigation frame...")
-        wait = WebDriverWait(driver, 10)
-        wait.until(EC.frame_to_be_available_and_switch_to_it((By.NAME, "nav")))
-        print("  -> Switched to navigation frame.")
-        
+        if not nav_frame_found:
+            print("  [CRITICAL] Could not find a suitable navigation frame. Aborting parser.", file=sys.stderr)
+            return
+
         section_links_data = []
         for link in driver.find_elements(By.TAG_NAME, 'a'):
             href = link.get_attribute('href')
             text = link.text
-            if href and text and "Back to" not in text:
+            if href and text and "Back to" not in text and "Home" not in text:
                 section_links_data.append({'url': href, 'text': text})
         
         driver.switch_to.default_content()
@@ -98,16 +114,28 @@ def parse_tsr_archive_selenium(conn, start_url, lang):
             section_text = section_data['text']
             print(f"    -> Scraping Section: {section_text}")
             driver.get(section_url)
-            wait.until(EC.frame_to_be_available_and_switch_to_it((By.NAME, "main")))
+            
+            # FIX: Dynamically find and switch to the main content frame.
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, "frame")))
+            frames = driver.find_elements(By.TAG_NAME, "frame")
+            main_frame_found = False
+            for frame in frames:
+                if 'main' in (frame.get_attribute('name') or '') or 'main' in (frame.get_attribute('src') or ''):
+                    driver.switch_to.frame(frame)
+                    main_frame_found = True
+                    break
+            
+            if not main_frame_found: continue
             
             section_soup = BeautifulSoup(driver.page_source, 'lxml')
             driver.switch_to.default_content()
 
             for item_link in section_soup.select('b > a[href$=".html"]'):
                 product_page_url = urljoin(section_url, item_link['href'])
-                driver.get(product_page_url)
+                # No need to use the driver for the final page if requests works
+                product_soup = safe_request(product_page_url)
+                if not product_soup: continue
                 
-                product_soup = BeautifulSoup(driver.page_source, 'lxml')
                 title_tag = product_soup.find('h1')
                 title = title_tag.get_text(strip=True) if title_tag else item_link.get_text(strip=True)
                 
@@ -125,15 +153,19 @@ def parse_tsr_archive_selenium(conn, start_url, lang):
                     total_added += cursor.rowcount
             conn.commit()
 
+    except TimeoutException as e:
+        print(f"  [CRITICAL] Selenium parser timed out waiting for a page element (frame). The site may be slow or has changed structure. Error: {e}", file=sys.stderr)
     except Exception as e:
-        print(f"  [CRITICAL] Selenium parser for TSR Archive failed: {e}", file=sys.stderr)
+        print(f"  [CRITICAL] An unexpected error occurred in the Selenium parser: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
     finally:
         if driver:
             driver.quit()
 
     print(f"[SUCCESS] TSR Archive parsing for '{lang}' complete. Added {total_added} unique entries.")
 
-# --- (Other parsers now have their full code restored) ---
+# --- (Full, working versions of other parsers restored) ---
 def parse_wikipedia_generic(conn, url, system, category, lang, description):
     """A stateful parser for Wikipedia that is multi-lingual and correctly finds editions."""
     print(f"\n[+] Parsing Wikipedia: {description}...")
