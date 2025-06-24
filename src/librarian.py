@@ -9,14 +9,27 @@ from pathlib import Path
 import warnings
 import re
 import sys
+import unicodedata
+from rapidfuzz import fuzz
 from src.config_loader import load_config
+
+def normalize_text(text):
+    """
+    Lowercase, NFKD-unicode normalize, and strip accents and non-alphanumerics.
+    """
+    if not text:
+        return ''
+    text = text.lower()
+    text = unicodedata.normalize('NFKD', text)
+    text = ''.join(c for c in text if not unicodedata.combining(c))
+    text = re.sub(r'[^a-z0-9]', '', text)
+    return text
 
 # --- Classifier Engine ---
 class Classifier:
     """
     An intelligent engine for categorizing files using a multi-tiered approach.
-    It prioritizes high-accuracy methods (knowledge base) and falls back to
-    broader heuristics (folder names, file types) to ensure every file is categorized.
+    Enhanced for multilingual/Unicode support and fuzzy matching.
     """
     def __init__(self, knowledge_db_path):
         self.conn = None
@@ -24,53 +37,102 @@ class Classifier:
         self.path_keywords = {}
         if os.path.exists(knowledge_db_path):
             try:
-                # Connect in read-only mode to prevent accidental changes.
                 self.conn = sqlite3.connect(f"file:{knowledge_db_path}?mode=ro", uri=True)
                 self.load_products_to_cache()
                 self.load_path_keywords()
+                self.load_alternate_keywords()  # New: load alternate language keywords
             except sqlite3.Error as e:
                 print(f"[WARNING] Could not connect to knowledge base. TTRPG classification will be limited. Error: {e}", file=sys.stderr)
         else:
             print("[WARNING] Knowledge base not found. Run build_knowledgebase.sh for full TTRPG classification.", file=sys.stderr)
 
     def load_products_to_cache(self):
-        """Loads product data into memory for extremely fast lookups during classification."""
+        """
+        Loads product data into memory for extremely fast lookups during classification.
+        Now normalizes keys for multilingual support.
+        """
         if not self.conn: return
         cursor = self.conn.cursor()
         cursor.execute("SELECT product_code, title, game_system, edition, category FROM products")
         for code, title, system, edition, category in cursor.fetchall():
-            if code: self.product_cache[re.sub(r'[^a-z0-9]', '', code.lower())] = (system, edition, category)
-            if title: self.product_cache[re.sub(r'[^a-z0-9]', '', title.lower())] = (system, edition, category)
+            if code:
+                nkey = normalize_text(code)
+                self.product_cache[nkey] = (system, edition, category)
+            if title:
+                nkey = normalize_text(title)
+                self.product_cache[nkey] = (system, edition, category)
 
     def load_path_keywords(self):
-        """Creates a dictionary of TTRPG keywords (like 'd&d', '5e') for path analysis."""
+        """
+        Creates a dictionary of TTRPG keywords (like 'd&d', '5e') for path analysis.
+        Now normalized for multilingual support.
+        """
         if not self.conn: return
         cursor = self.conn.cursor()
         cursor.execute("SELECT DISTINCT game_system, edition FROM products WHERE game_system IS NOT NULL")
         for system, edition in cursor.fetchall():
-            self.path_keywords[system.lower().replace(" ", "")] = system
-            if edition: self.path_keywords[edition.lower().replace(" ", "")] = system
+            nsys = normalize_text(system)
+            self.path_keywords[nsys] = system
+            if edition:
+                nedit = normalize_text(edition)
+                self.path_keywords[nedit] = system
+
+    def load_alternate_keywords(self):
+        """
+        Optionally, loads alternate language keywords/titles from a table if present.
+        The table should have: alt_title, product_code, system, edition, category
+        """
+        if not self.conn: return
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT alt_title, product_code, game_system, edition, category FROM alternate_titles")
+            for alt_title, code, system, edition, category in cursor.fetchall():
+                if alt_title:
+                    nkey = normalize_text(alt_title)
+                    self.product_cache[nkey] = (system, edition, category)
+                    # Also add to path keywords for folder matching
+                    self.path_keywords[nkey] = system
+        except sqlite3.Error:
+            # Table doesn't exist, skip
+            pass
 
     def _classify_by_filename(self, filename):
-        """(Priority 1) Tries to classify based on product codes or titles in the filename."""
-        clean_filename = re.sub(r'[^a-z0-9]', '', filename.lower())
+        """
+        (Priority 1) Tries to classify based on product codes or titles in the filename.
+        Now uses normalization and fallback to fuzzy match.
+        """
+        clean_filename = normalize_text(filename)
         for title_key in sorted(self.product_cache.keys(), key=len, reverse=True):
             if title_key in clean_filename:
+                return self.product_cache[title_key]
+        # Fuzzy match fallback (threshold can be tuned)
+        for title_key in self.product_cache.keys():
+            if fuzz.partial_ratio(clean_filename, title_key) >= 90:
                 return self.product_cache[title_key]
         return None
 
     def _classify_by_path(self, full_path):
-        """(Priority 2) Tries to classify based on keywords found in the file's parent path."""
+        """
+        (Priority 2) Tries to classify based on keywords found in the file's parent path.
+        Path segments are normalized.
+        """
         if not self.path_keywords: return None
         for part in reversed(Path(full_path).parts[:-1]):
-            clean_part = part.lower().replace(" ", "").replace("_", "").replace("-", "")
+            clean_part = normalize_text(part)
             if clean_part in self.path_keywords:
                 game_system = self.path_keywords[clean_part]
                 return game_system, "From Folder", "Heuristic"
+            # Fuzzy match for path segments
+            for kw in self.path_keywords.keys():
+                if fuzz.partial_ratio(clean_part, kw) >= 90:
+                    game_system = self.path_keywords[kw]
+                    return game_system, "From Folder", "Heuristic"
         return None
 
     def _classify_by_mimetype(self, mime_type):
-        """(Priority 3) Classifies based on generic file type."""
+        """
+        (Priority 3) Classifies based on generic file type.
+        """
         major_type = mime_type.split('/')[0]
         if major_type == 'video': return ('Media', 'Video', None)
         if major_type == 'audio': return ('Media', 'Audio', None)
@@ -83,7 +145,9 @@ class Classifier:
         return None
 
     def classify(self, filename, full_path, mime_type):
-        """Runs the full classification hierarchy to find the best category for a file."""
+        """
+        Runs the full classification hierarchy to find the best category for a file.
+        """
         result = self._classify_by_filename(filename)
         if result: return result
         result = self._classify_by_path(full_path)
@@ -141,8 +205,6 @@ def build_library(config):
         if not os.path.isdir(src):
             print(f"[Warning] Source path not found, skipping: {src}", file=sys.stderr)
             continue
-        # Use rglob to recursively find all files. The check for p.is_file()
-        # robustly handles broken symbolic links, which are skipped.
         for p in Path(src).rglob('*'):
             if p.is_file():
                 try:
@@ -197,8 +259,6 @@ def build_library(config):
         original_path = Path(row['path'])
         new_filename = f"{original_path.stem}_{row['name_occurrence']}{original_path.suffix}" if row['name_occurrence'] > 0 else original_path.name
         
-        # Build the destination subdirectory using the classifier's output.
-        # Note that `row['category']` is used here for the folder path.
         dest_subdir = Path(row['game_system'] or 'Misc')
         if row['edition'] and pd.notna(row['edition']): dest_subdir = dest_subdir / row['edition']
         if row['category'] and pd.notna(row['category']): dest_subdir = dest_subdir / row['category']
@@ -207,10 +267,6 @@ def build_library(config):
         os.makedirs(destination_path.parent, exist_ok=True)
         try:
             shutil.copy2(original_path, destination_path)
-            
-            # This is the full and correct INSERT statement.
-            # As you correctly noted, `row['category']` is NOT inserted here,
-            # because the 'files' table does not have a 'category' column.
             cursor.execute(
                 "INSERT INTO files (filename, path, type, size, game_system, edition) VALUES (?, ?, ?, ?, ?, ?)",
                 (new_filename, str(destination_path), row['mime_type'], row['size'], row['game_system'], row['edition'])
