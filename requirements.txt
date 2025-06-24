@@ -1,9 +1,6 @@
 pandas
 PyMuPDF
-#python-magic-bin for windows only
 python-magic
 requests
 beautifulsoup4
 lxml
-selenium
-webdriver-manager
