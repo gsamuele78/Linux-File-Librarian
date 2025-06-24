@@ -13,6 +13,7 @@ import unicodedata
 from rapidfuzz import fuzz
 from src.config_loader import load_config
 import requests  # For optional remote knowledge base
+from src.isbn_enricher import enrich_file_with_isbn_metadata
 
 def normalize_text(text):
     """
@@ -214,6 +215,42 @@ def scan_files(source_paths):
                     print(f"  [Warning] Could not stat file {p.name}. Skipping. Reason: {e}", file=sys.stderr)
 
 # --- Main Logic ---
+def classify_with_isbn_fallback(classifier, filename, full_path, mime_type, isbn_cache):
+    """
+    Try normal classification, then try ISBN enrichment if uncategorized.
+    isbn_cache: dict to avoid redundant ISBN lookups.
+    """
+    result = classifier._classify_by_filename(filename)
+    if result:
+        return result
+    result = classifier._classify_by_path(full_path)
+    if result:
+        return result
+    result = classifier._classify_by_mimetype(mime_type)
+    if result:
+        return result
+    # Try ISBN enrichment only for PDFs and text files
+    if mime_type.startswith('application/pdf') or mime_type.startswith('text/'):
+        if full_path in isbn_cache:
+            isbn_results = isbn_cache[full_path]
+        else:
+            isbn_results = enrich_file_with_isbn_metadata(full_path)
+            isbn_cache[full_path] = isbn_results
+        if isbn_results:
+            # Use the first valid ISBN metadata found
+            meta = isbn_results[0]['metadata']
+            title = meta.get('title')
+            authors = ', '.join(a['name'] for a in meta.get('authors', [])) if meta.get('authors') else None
+            # Use title as a pseudo-product for classification
+            if title:
+                # Try to classify by title using normalized text
+                ntitle = normalize_text(title)
+                if ntitle in classifier.product_cache:
+                    return classifier.product_cache[ntitle]
+                # Otherwise, use Open Library metadata as best guess
+                return (title, None, "ISBN/Book")
+    return ('Miscellaneous', None, None)
+
 def build_library(config):
     # --- Step 1: Configuration & Setup ---
     SOURCE_PATHS, LIBRARY_ROOT = config['source_paths'], config['library_root']
@@ -225,6 +262,7 @@ def build_library(config):
     print("--- Starting Library Build Process ---")
     os.makedirs(LIBRARY_ROOT, exist_ok=True)
     classifier = Classifier(KNOWLEDGE_DB_FILE)
+    isbn_cache = {}  # To avoid redundant ISBN queries
 
     # --- Step 2: File Scanning ---
     print("Step 1: Scanning all source directories for files...")
@@ -248,7 +286,8 @@ def build_library(config):
         file_hash = get_file_hash(path)
         is_pdf, has_ocr = (False, False)
         if 'pdf' in mime_type: is_pdf, has_ocr = get_pdf_details(path)
-        system, edition, category = classifier.classify(row['name'], path, mime_type)
+        # Use new classification function with ISBN fallback
+        system, edition, category = classify_with_isbn_fallback(classifier, row['name'], path, mime_type, isbn_cache)
         analysis_results.append({'hash': file_hash, 'mime_type': mime_type, 'is_pdf_valid': is_pdf, 'has_ocr': has_ocr, 'game_system': system, 'edition': edition, 'category': category})
         if (index + 1) % 500 == 0: print(f"  ...processed {index + 1}/{len(df)} files")
     df = pd.concat([df, pd.DataFrame(analysis_results)], axis=1).dropna(subset=['hash'])
