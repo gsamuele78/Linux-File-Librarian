@@ -53,12 +53,12 @@ def parse_tsr_archive(conn, start_url, lang):
     index_soup = safe_request(start_url)
     if not index_soup: return
 
-    # Find links within table data cells, which are the content links
+    # Find links within table data cells, which are the content links, not nav links.
     section_links = index_soup.select('td > a[href$=".html"]')
     
     for section_link in section_links:
         section_text = section_link.get_text(strip=True)
-        if "Back to" in section_text or "Home" in section_text:
+        if "Back to" in section_text or "Home" in section_text or not section_text:
             continue
             
         # 2. For each section, go to its page and parse it
@@ -67,7 +67,7 @@ def parse_tsr_archive(conn, start_url, lang):
         section_soup = safe_request(section_url)
         if not section_soup: continue
 
-        # 3. Find all product links on the section page
+        # 3. Find all product links on the section page.
         # The most reliable pattern is a link inside a bold tag.
         for item_link in section_soup.select('b > a[href$=".html"]'):
             # 4. Visit the actual product page to get definitive data
@@ -101,9 +101,8 @@ def parse_tsr_archive(conn, start_url, lang):
     
     print(f"[SUCCESS] TSR Archive parsing for '{lang}' complete. Added {total_added} unique entries.")
 
-# --- (Other parsers remain the same as the previous fixed versions) ---
 def parse_wikipedia_generic(conn, url, system, category, lang, description):
-    """A stateful parser for Wikipedia that correctly determines the edition."""
+    """(UPGRADED) A stateful parser for Wikipedia that is multi-lingual and correctly finds editions."""
     print(f"\n[+] Parsing Wikipedia: {description}...")
     cursor = conn.cursor()
     soup = safe_request(url)
@@ -140,7 +139,7 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
     print(f"[SUCCESS] Wikipedia ({description}) parsing complete. Added {total_added} unique entries.")
 
 def parse_dndwiki_35e(conn, url, lang):
-    """Parser for dnd-wiki.org that correctly parses the full page."""
+    """(UPGRADED) Parser for dnd-wiki.org that correctly parses the full page."""
     print(f"\n[+] Parsing dnd-wiki.org for 3.5e Adventures...")
     cursor = conn.cursor()
     soup = safe_request(url)
@@ -159,7 +158,7 @@ def parse_dndwiki_35e(conn, url, lang):
     print(f"[SUCCESS] dnd-wiki.org parsing complete. Added {total_added} unique entries.")
 
 def parse_drivethrurpg(conn, url, system, lang):
-    """Parser that gracefully handles the expected 403 error from DriveThruRPG."""
+    """(UNCHANGED) This parser gracefully handles the expected 403 error from DriveThruRPG."""
     print(f"\n[+] Parsing DriveThruRPG {system} products from {url}...")
     print("  [INFO] DriveThruRPG actively blocks automated scripts (HTTP 403 Error).")
     soup = safe_request(url)
@@ -170,10 +169,8 @@ def parse_drivethrurpg(conn, url, system, lang):
 
 # --- Main Execution Block ---
 PARSER_MAPPING = {
-    # The two TSR archive keys now point to the SAME powerful parser.
     "tsr_archive_en": (parse_tsr_archive, "English"),
     "tsr_archive_it": (parse_tsr_archive, "Italian"),
-    
     "wiki_dnd_modules": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Module", l, "D&D Modules"), "English"),
     "wiki_dnd_adventures": (lambda c, u, l: parse_wikipedia_generic(c, u, "D&D", "Adventure", l, "D&D Adventures"), "English"),
     "dndwiki_35e": (parse_dndwiki_35e, "English"),
@@ -205,7 +202,6 @@ if __name__ == "__main__":
         else:
             print(f"  [WARNING] No parser available for config key '{key}'. Skipping.", file=sys.stderr)
     
-    # --- Final Statistics Report ---
     print("\n--- Knowledge Base Statistics ---")
     cursor = connection.cursor()
     cursor.execute("SELECT COUNT(*) FROM products")
