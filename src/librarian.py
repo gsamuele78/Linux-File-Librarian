@@ -193,7 +193,11 @@ def get_pdf_details(file_path):
             if doc.page_count > 0:
                 is_valid = True
                 for page in doc:
-                    if page.get_text():
+                    try:
+                        text = page.get_text("text")
+                    except AttributeError:
+                        text = page.getText("text")
+                    if text:
                         has_text = True
                         break
     except Exception:
@@ -276,31 +280,38 @@ def build_library(config):
     # --- Step 3: Analysis & Classification ---
     print("Step 2: Analyzing and Classifying files (this may take a while)...")
     analysis_results = []
-    for index, row in df.iterrows():
-        path = row['path']
+    for idx, row in enumerate(df.itertuples(index=False)):
+        path = str(row.path)
         try:
             mime_type = magic.from_file(path, mime=True)
         except magic.MagicException as e:
-            print(f"  [Warning] Could not determine MIME type for {row['name']}. Reason: {e}", file=sys.stderr)
+            print(f"  [Warning] Could not determine MIME type for {row.name}. Reason: {e}", file=sys.stderr)
             mime_type = 'unknown/unknown'
         file_hash = get_file_hash(path)
         is_pdf, has_ocr = (False, False)
         if 'pdf' in mime_type: is_pdf, has_ocr = get_pdf_details(path)
         # Use new classification function with ISBN fallback
-        system, edition, category = classify_with_isbn_fallback(classifier, row['name'], path, mime_type, isbn_cache)
+        system, edition, category = classify_with_isbn_fallback(classifier, row.name, path, mime_type, isbn_cache)
         analysis_results.append({'hash': file_hash, 'mime_type': mime_type, 'is_pdf_valid': is_pdf, 'has_ocr': has_ocr, 'game_system': system, 'edition': edition, 'category': category})
-        if (index + 1) % 500 == 0: print(f"  ...processed {index + 1}/{len(df)} files")
+        if (idx + 1) % 500 == 0: print(f"  ...processed {idx + 1}/{len(df)} files")
     df = pd.concat([df, pd.DataFrame(analysis_results)], axis=1).dropna(subset=['hash'])
-
     # --- Step 4: Deduplication & Selection ---
     print("Step 3: Deduplicating based on content and selecting best files...")
     df['quality_score'] = 0
-    df.loc[df['has_ocr'], 'quality_score'] += 4
-    df.loc[df['is_pdf_valid'], 'quality_score'] += 2
-    df.loc[df['size'] > MIN_PDF_SIZE_BYTES, 'quality_score'] += 1
+    # Fix: increment quality_score only for numeric rows
+    def safe_add_quality(row, add):
+        try:
+            if isinstance(row['quality_score'], (int, float)):
+                return row['quality_score'] + add
+        except Exception:
+            pass
+        return row['quality_score']
+    df.loc[df['has_ocr'] == True, 'quality_score'] = df.loc[df['has_ocr'] == True].apply(lambda row: safe_add_quality(row, 4), axis=1)
+    df.loc[df['is_pdf_valid'] == True, 'quality_score'] = df.loc[df['is_pdf_valid'] == True].apply(lambda row: safe_add_quality(row, 2), axis=1)
+    mask = (df['size'].apply(lambda x: isinstance(x, (int, float))) & (df['size'] > MIN_PDF_SIZE_BYTES))
+    df.loc[mask, 'quality_score'] = df.loc[mask].apply(lambda row: safe_add_quality(row, 1), axis=1)
     df = df.sort_values(by=['quality_score', 'size'], ascending=False)
     unique_files = df.drop_duplicates(subset='hash', keep='first').copy()
-    print(f"  - After content deduplication: {len(unique_files)} unique files remain.")
     unique_files['name_occurrence'] = unique_files.groupby('name').cumcount()
 
     # --- Step 5: Copy & Index ---

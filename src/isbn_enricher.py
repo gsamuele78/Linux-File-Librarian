@@ -18,7 +18,11 @@ def extract_isbns_from_file(filepath):
             with fitz.open(filepath) as doc:
                 text = ""
                 for page in doc:
-                    text += page.get_text()
+                    try:
+                        page_text = page.get_text("text")
+                    except AttributeError:
+                        page_text = page.getText("text")
+                    text += page_text
                 return extract_isbns_from_text(text)
         else:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:

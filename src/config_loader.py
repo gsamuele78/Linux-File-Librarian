@@ -1,6 +1,10 @@
 import configparser
 from pathlib import Path
 
+class CaseConfigParser(configparser.ConfigParser):
+    def optionxform(self, optionstr):
+        return optionstr
+
 def load_config():
     """
     Reads the central conf/config.ini file and returns a structured dictionary of settings.
@@ -13,8 +17,7 @@ def load_config():
         FileNotFoundError: If the config.ini file cannot be found.
         ValueError: If required configuration values are missing or invalid.
     """
-    config = configparser.ConfigParser()
-    config.optionxform = str  # preserve case sensitivity for keys
+    config = CaseConfigParser(interpolation=None)
 
     config_path = Path(__file__).parent.parent / 'conf' / 'config.ini'
     if not config_path.exists():
