@@ -823,6 +823,25 @@ def build_library(config):
         open_files = len(process.open_files()) if hasattr(process, 'open_files') else 'N/A'
         children = len(process.children(recursive=True))
         print(f"[RESOURCE] {phase}: RAM={mem:.1f}MB, OpenFiles={open_files}, Children={children}")
+
+    def wait_for_free_ram(min_free_mb=400, check_interval=5, max_wait=300):
+        """
+        Wait until at least min_free_mb of free RAM is available.
+        """
+        waited = 0
+        while True:
+            vm = psutil.virtual_memory()
+            free_mb = vm.available / (1024*1024)
+            if free_mb >= min_free_mb:
+                print(f"[RESOURCE] Sufficient free RAM: {free_mb:.1f}MB >= {min_free_mb}MB")
+                break
+            print(f"[RESOURCE] Waiting for free RAM: {free_mb:.1f}MB < {min_free_mb}MB (waited {waited}s)")
+            time.sleep(check_interval)
+            waited += check_interval
+            if waited >= max_wait:
+                print(f"[WARNING] Still low on RAM after {max_wait}s, proceeding anyway.", file=sys.stderr)
+                break
+    wait_for_free_ram(400)
     print_resource_usage('Start')
     os.makedirs(LIBRARY_ROOT, exist_ok=True)
     classifier = Classifier(KNOWLEDGE_DB_FILE)
@@ -831,6 +850,7 @@ def build_library(config):
     # --- Step 2: File Scanning ---
     print("Step 1: Scanning all source directories for files...")
     print("[DEBUG] Starting file scan phase")
+    wait_for_free_ram(400)
     print_resource_usage('Before Scan')
     all_files = list(scan_files(SOURCE_PATHS))
     if not all_files:
@@ -847,6 +867,7 @@ def build_library(config):
     #     df = df.head(MAX_TEST_FILES)
     print(f"[DEBUG] DataFrame shape: {df.shape}")
     print("[DEBUG] Starting PDF validation/repair phase")
+    wait_for_free_ram(400)
     print_resource_usage('Before PDF Validation')
 
     # --- Step 3: Analysis & Classification ---
@@ -903,6 +924,7 @@ def build_library(config):
     print("[DEBUG] Preparing analyze_row_partial for classification/hashing phase")
     analyze_row_partial = partial(analyze_row, knowledge_db_path=knowledge_db_path, isbn_cache=isbn_cache, pdf_validation=pdf_validation)
     print("[DEBUG] analyze_row_partial created")
+    wait_for_free_ram(400)
     print_resource_usage('Before Hashing/Classification')
     # --- Step 3b: Hashing/Classification Phase ---
     print("[DEBUG] Creating row_iter for classification/hashing phase")
@@ -1103,6 +1125,7 @@ def analyze_row(row, knowledge_db_path, isbn_cache, pdf_validation):
     # --- Step 4: Deduplication & Selection ---
     print("Step 3: Deduplicating based on content and selecting best files...")
     print("[DEBUG] Starting deduplication/selection phase")
+    wait_for_free_ram(400)
     print_resource_usage('Before Deduplication')
     df['quality_score'] = 0
     # Fix: increment quality_score only for numeric rows
@@ -1124,6 +1147,7 @@ def analyze_row(row, knowledge_db_path, isbn_cache, pdf_validation):
     # --- Step 5: Copy & Index ---
     print("Step 4: Copying files into new structure and building search index...")
     print("[DEBUG] Starting copy/index phase")
+    wait_for_free_ram(400)
     print_resource_usage('Before Copy/Index')
     db_path = os.path.join(LIBRARY_ROOT, DB_FILE)
     if os.path.exists(db_path):
