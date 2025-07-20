@@ -1,3 +1,33 @@
+import traceback
+# --- Robust Timeout Helper ---
+import multiprocessing
+import signal
+import time
+
+def run_with_timeout(func, args=(), kwargs=None, timeout=120):
+    """
+    Run a function in a subprocess with a hard timeout. Returns (success, result or exception).
+    If the function does not finish in time, forcibly terminates the process.
+    """
+    if kwargs is None:
+        kwargs = {}
+    def target(q, *args, **kwargs):
+        try:
+            res = func(*args, **kwargs)
+            q.put((True, res))
+        except Exception as e:
+            q.put((False, e))
+    q = multiprocessing.Queue()
+    p = multiprocessing.Process(target=target, args=(q,)+args, kwargs=kwargs)
+    p.start()
+    p.join(timeout)
+    if p.is_alive():
+        p.terminate()
+        p.join(5)
+        return (False, TimeoutError(f"Timeout after {timeout}s"))
+    if not q.empty():
+        return q.get()
+    return (False, RuntimeError("No result returned from subprocess"))
 import os
 import hashlib
 import shutil
@@ -9,11 +39,12 @@ from pathlib import Path
 import warnings
 import re
 import sys
+import traceback
 import unicodedata
 from src.config_loader import load_config
 import requests  # For optional remote knowledge base
 from src.isbn_enricher import enrich_file_with_isbn_metadata
-import subprocess
+import subprocess  # Ensure subprocess is always imported at the top
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import resource
@@ -214,8 +245,18 @@ skipped_invalid_pdf_files = []
 failed_pdf_repairs = []
 
 LOG_FILE = "librarian_run.log"
+INSTALL_LOG_FILE = "librarian_install.log"
 
+# --- In-memory error aggregation to reduce log spam ---
+_logged_errors = set()
+_error_counts = {}
 def log_error(error_type, file_path, message, extra=None):
+    key = (error_type, file_path, message)
+    if key in _logged_errors:
+        _error_counts[key] = _error_counts.get(key, 1) + 1
+        return
+    _logged_errors.add(key)
+    _error_counts[key] = 1
     with open(LOG_FILE, "a", encoding="utf-8") as logf:
         logf.write(f"[{error_type}] {file_path} | {message}\n")
         if extra:
@@ -243,6 +284,31 @@ def qpdf_check_pdf(file_path):
     except Exception as e:
         return False, str(e)
 
+def extract_text_with_pypdf2(file_path):
+    try:
+        import PyPDF2
+        with open(file_path, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            for page in reader.pages:
+                text = page.extract_text()
+                if text and text.strip():
+                    return True
+        return False
+    except Exception as e:
+        print(f"  [DEBUG] PyPDF2 extraction failed for {file_path}: {e}", file=sys.stderr)
+        return False
+
+def extract_text_with_pdfminer(file_path):
+    try:
+        from pdfminer.high_level import extract_text
+        text = extract_text(file_path, maxpages=1)
+        if text and text.strip():
+            return True
+        return False
+    except Exception as e:
+        print(f"  [DEBUG] pdfminer.six extraction failed for {file_path}: {e}", file=sys.stderr)
+        return False
+
 def get_pdf_details(file_path):
     is_valid, has_text = False, False
     pdf_version = None
@@ -251,6 +317,9 @@ def get_pdf_details(file_path):
     qpdf_checked = False
     qpdf_check_output = None
     warnings.filterwarnings("ignore", category=UserWarning)
+    # --- MuPDF error aggregation ---
+    global _logged_errors, _error_counts
+    mupdf_error_seen = set()
     # Skip AppleDouble files (macOS resource forks)
     if os.path.basename(file_path).startswith("._"):
         msg = f"Skipping AppleDouble resource fork: {file_path}"
@@ -279,6 +348,7 @@ def get_pdf_details(file_path):
         log_error("HEADER_READ_ERROR", file_path, msg)
         skipped_invalid_pdf_files.append(file_path)
         return False, False, pdf_version, pdf_creator, pdf_producer
+    # --- Main text extraction with MuPDF, fallback to qpdf, then PyPDF2/pdfminer ---
     try:
         with fitz.open(file_path) as doc:
             if doc.page_count > 0:
@@ -298,19 +368,25 @@ def get_pdf_details(file_path):
                             text = getText_fn("text")
                         else:
                             msg = f"PyMuPDF page object has no get_text or getText method"
-                            print(f"  [Warning] {msg} for {file_path}", file=sys.stderr)
-                            log_error("MUPDF_METHOD_ERROR", file_path, msg)
+                            if msg not in mupdf_error_seen:
+                                print(f"  [Warning] {msg} for {file_path}", file=sys.stderr)
+                                log_error("MUPDF_METHOD_ERROR", file_path, msg)
+                                mupdf_error_seen.add(msg)
                     except Exception as e:
                         msg = f"Could not extract text from page: {e}"
-                        print(f"  [Warning] {msg} in {file_path}", file=sys.stderr)
-                        log_error("MUPDF_TEXT_EXTRACTION_ERROR", file_path, msg)
+                        if msg not in mupdf_error_seen:
+                            print(f"  [Warning] {msg} in {file_path}", file=sys.stderr)
+                            log_error("MUPDF_TEXT_EXTRACTION_ERROR", file_path, msg)
+                            mupdf_error_seen.add(msg)
                     if text:
                         has_text = True
                         break
     except Exception as e:
         msg = f"Could not open PDF with PyMuPDF: {e}"
-        print(f"  [Warning] {msg} {file_path}", file=sys.stderr)
-        log_error("MUPDF_OPEN_ERROR", file_path, msg)
+        if msg not in mupdf_error_seen:
+            print(f"  [Warning] {msg} {file_path}", file=sys.stderr)
+            log_error("MUPDF_OPEN_ERROR", file_path, msg)
+            mupdf_error_seen.add(msg)
         # Fallback: try qpdf --check
         is_valid, qpdf_check_output = qpdf_check_pdf(file_path)
         qpdf_checked = True
@@ -318,8 +394,16 @@ def get_pdf_details(file_path):
             print(f"  [INFO] qpdf --check: PDF is valid according to qpdf: {file_path}")
         else:
             msg = f"qpdf --check: PDF is invalid. qpdf output: {qpdf_check_output}"
-            print(f"  [Warning] {msg} {file_path}", file=sys.stderr)
-            log_error("QPDF_CHECK_ERROR", file_path, msg, extra=qpdf_check_output)
+            if msg not in mupdf_error_seen:
+                print(f"  [Warning] {msg} {file_path}", file=sys.stderr)
+                log_error("QPDF_CHECK_ERROR", file_path, msg, extra=qpdf_check_output)
+                mupdf_error_seen.add(msg)
+        # Fallback: try PyPDF2/pdfminer.six for text extraction if MuPDF and qpdf fail
+        if not has_text:
+            print(f"  [DEBUG] Trying PyPDF2/pdfminer.six fallback for {file_path}", file=sys.stderr)
+            has_text = extract_text_with_pypdf2(file_path)
+            if not has_text:
+                has_text = extract_text_with_pdfminer(file_path)
         # Optionally, log to a file for later review
         with open("bad_pdfs.log", "a") as logf:
             logf.write(f"{file_path}: PyMuPDF error: {e}\nqpdf --check: {qpdf_check_output}\n")
@@ -347,46 +431,43 @@ def repair_pdf(input_path, output_path):
     """
     import shutil
     import subprocess
-    # Ensure ghostscript and pdftocairo are installed (robust: skip if already installed)
-    try:
-        ensure_system_tool_installed('gs', [['sudo', 'apt-get', 'install', '-y', 'ghostscript'], ['sudo', 'dnf', 'install', '-y', 'ghostscript'], ['sudo', 'yum', 'install', '-y', 'ghostscript']])
-    except Exception as e:
-        print(f"  [Warning] Could not ensure ghostscript: {e}", file=sys.stderr)
-    try:
-        ensure_system_tool_installed('pdftocairo', [['sudo', 'apt-get', 'install', '-y', 'poppler-utils'], ['sudo', 'dnf', 'install', '-y', 'poppler-utils'], ['sudo', 'yum', 'install', '-y', 'poppler-utils']])
-    except Exception as e:
-        print(f"  [Warning] Could not ensure pdftocairo: {e}", file=sys.stderr)
     # Remove output_path if it exists to avoid stale file issues
     if os.path.exists(output_path):
         try:
             os.remove(output_path)
         except Exception:
             pass
-    try:
-        result = subprocess.run(['qpdf', '--repair', input_path, output_path], check=True, capture_output=True)
-        if os.path.exists(output_path):
-            return True
-    except Exception as e:
-        msg = f"Could not repair PDF with --repair: {e}"
-        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
-        log_error("PDF_REPAIR_ERROR", input_path, msg)
-    # Try --linearize as a fallback
-    try:
-        result = subprocess.run(['qpdf', '--linearize', input_path, output_path], check=True, capture_output=True)
-        if os.path.exists(output_path):
-            print(f"  [INFO] PDF repaired with --linearize: {input_path} -> {output_path}")
-            log_error("PDF_REPAIR_LINEARIZE", input_path, "Repaired with --linearize")
-            return True
-    except Exception as e:
-        msg = f"Could not repair PDF with --linearize: {e}"
-        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
-        log_error("PDF_REPAIR_ERROR", input_path, msg)
+    # Helper for subprocess with timeout and error logging
+    def run_subprocess(cmd, timeout=60, **kwargs):
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, timeout=timeout, **kwargs)
+            return result
+        except subprocess.TimeoutExpired as e:
+            msg = f"Timeout running: {' '.join(cmd)}"
+            print(f"  [Timeout] {msg}", file=sys.stderr)
+            log_error("PDF_REPAIR_TIMEOUT", input_path, msg)
+        except Exception as e:
+            msg = f"Error running: {' '.join(cmd)}: {e}"
+            print(f"  [Warning] {msg}", file=sys.stderr)
+            log_error("PDF_REPAIR_ERROR", input_path, msg)
+        return None
+    # Try qpdf --repair
+    result = run_subprocess(['qpdf', '--repair', input_path, output_path], timeout=60)
+    if result and os.path.exists(output_path):
+        print(f"  [INFO] PDF repaired with qpdf --repair: {input_path} -> {output_path}")
+        log_error("PDF_REPAIR_QPDF", input_path, "Repaired with qpdf --repair", extra=result.stderr.decode(errors='ignore') if result.stderr else None)
+        return True
+    # Try qpdf --linearize as a fallback
+    result = run_subprocess(['qpdf', '--linearize', input_path, output_path], timeout=60)
+    if result and os.path.exists(output_path):
+        print(f"  [INFO] PDF repaired with qpdf --linearize: {input_path} -> {output_path}")
+        log_error("PDF_REPAIR_LINEARIZE", input_path, "Repaired with qpdf --linearize", extra=result.stderr.decode(errors='ignore') if result.stderr else None)
+        return True
     # Try to extract pages with PyMuPDF as a last resort
     try:
-        import fitz
         doc = fitz.open(input_path)
         if doc.page_count > 0:
-            doc.save(output_path)
+            doc.save(output_path, garbage=4, deflate=True, clean=True)
             print(f"  [INFO] PDF re-saved with PyMuPDF: {input_path} -> {output_path}")
             log_error("PDF_REPAIR_PYMUPDF", input_path, "Re-saved with PyMuPDF")
             return True
@@ -394,46 +475,215 @@ def repair_pdf(input_path, output_path):
         msg = f"Could not re-save PDF with PyMuPDF: {e}"
         print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
         log_error("PDF_REPAIR_ERROR", input_path, msg)
-    # Try Ghostscript as a fallback
-    try:
-        gs_cmd = ['gs', '-o', output_path, '-sDEVICE=pdfwrite', '-dPDFSETTINGS=/prepress', input_path]
-        result = subprocess.run(gs_cmd, check=True, capture_output=True)
-        if os.path.exists(output_path):
-            print(f"  [INFO] PDF repaired with Ghostscript: {input_path} -> {output_path}")
-            log_error("PDF_REPAIR_GHOSTSCRIPT", input_path, "Repaired with Ghostscript")
+    # Try Ghostscript as a fallback (with aggressive repair options)
+    gs_cmd = ['gs', '-o', output_path, '-sDEVICE=pdfwrite', '-dPDFSETTINGS=/prepress', '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dQUIET', input_path]
+    result = run_subprocess(gs_cmd, timeout=120)
+    if result and os.path.exists(output_path):
+        print(f"  [INFO] PDF repaired with Ghostscript: {input_path} -> {output_path}")
+        log_error("PDF_REPAIR_GHOSTSCRIPT", input_path, "Repaired with Ghostscript", extra=result.stderr.decode(errors='ignore') if result.stderr else None)
+        return True
+    # Try pdftocairo as a final fallback (with -origpagesizes and -antialias)
+    pdftocairo_cmd = ['pdftocairo', '-pdf', '-origpagesizes', '-antialias', 'gray', input_path, output_path]
+    result = run_subprocess(pdftocairo_cmd, timeout=120)
+    if result and os.path.exists(output_path):
+        print(f"  [INFO] PDF repaired with pdftocairo: {input_path} -> {output_path}")
+        log_error("PDF_REPAIR_PDFTOCAIRO", input_path, "Repaired with pdftocairo", extra=result.stderr.decode(errors='ignore') if result.stderr else None)
+        return True
+    # Try mutool clean as a last resort (if available)
+    if shutil.which('mutool'):
+        mutool_cmd = ['mutool', 'clean', '-gggg', input_path, output_path]
+        result = run_subprocess(mutool_cmd, timeout=60)
+        if result and os.path.exists(output_path):
+            print(f"  [INFO] PDF repaired with mutool clean: {input_path} -> {output_path}")
+            log_error("PDF_REPAIR_MUTOOL", input_path, "Repaired with mutool clean", extra=result.stderr.decode(errors='ignore') if result.stderr else None)
             return True
-    except Exception as e:
-        msg = f"Could not repair PDF with Ghostscript: {e}"
-        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
-        log_error("PDF_REPAIR_ERROR", input_path, msg)
-    # Try pdftocairo as a final fallback
-    try:
-        pdftocairo_cmd = ['pdftocairo', '-pdf', input_path, output_path]
-        result = subprocess.run(pdftocairo_cmd, check=True, capture_output=True)
-        if os.path.exists(output_path):
-            print(f"  [INFO] PDF repaired with pdftocairo: {input_path} -> {output_path}")
-            log_error("PDF_REPAIR_PDFTOCAIRO", input_path, "Repaired with pdftocairo")
-            return True
-    except Exception as e:
-        msg = f"Could not repair PDF with pdftocairo: {e}"
-        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
-        log_error("PDF_REPAIR_ERROR", input_path, msg)
+    # Try pdfcpu (if available)
+    if shutil.which('pdfcpu'):
+        pdfcpu_cmd = ['pdfcpu', 'validate', '-mode', 'relaxed', input_path]
+        result = run_subprocess(pdfcpu_cmd, timeout=60)
+        if result and result.returncode == 0:
+            pdfcpu_cmd = ['pdfcpu', 'optimize', input_path, output_path]
+            result2 = run_subprocess(pdfcpu_cmd, timeout=120)
+            if result2 and os.path.exists(output_path):
+                print(f"  [INFO] PDF repaired with pdfcpu: {input_path} -> {output_path}")
+                log_error("PDF_REPAIR_PDFCPU", input_path, "Repaired with pdfcpu", extra=result2.stderr.decode(errors='ignore') if result2.stderr else None)
+                return True
     return False
 
 def ensure_system_tool_installed(tool_name, install_cmds):
-    """Ensure a system tool is installed, try to install if missing."""
+    # Special handling for pdfcpu on Debian/Ubuntu (install from GitHub release if not present)
     import shutil
+    install_log_file = "librarian_install.log"
+    # --- Robust pdfcpu install: handle 404 and avoid repeated attempts ---
+    if tool_name == 'pdfcpu' and shutil.which('pdfcpu') is None:
+        import platform
+        import tempfile
+        import tarfile
+        import urllib.request
+        import urllib.error
+        # subprocess is already imported at the top
+        # Use a temp file as a flag to avoid repeated attempts in the same run
+        pdfcpu_failed_flag = '/tmp/pdfcpu_install_failed.flag'
+        if os.path.exists(pdfcpu_failed_flag):
+            print("[INFO] Skipping pdfcpu install: previous attempt failed.", file=sys.stderr)
+            with open(install_log_file, "a", encoding="utf-8") as ilog:
+                ilog.write(f"[INFO] Skipping pdfcpu install: previous attempt failed.\n")
+            return False
+        try:
+            distro = ''
+            try:
+                with open('/etc/os-release') as f:
+                    for line in f:
+                        if line.startswith('ID='):
+                            distro = line.strip().split('=')[1].strip('"')
+                            break
+            except Exception:
+                pass
+            if 'debian' in distro or 'ubuntu' in distro:
+                print("[INFO] Attempting to install pdfcpu from GitHub release for Debian/Ubuntu...", file=sys.stderr)
+                with open(install_log_file, "a", encoding="utf-8") as ilog:
+                    ilog.write(f"[INFO] Attempting to install pdfcpu from GitHub release for Debian/Ubuntu...\n")
+                try:
+                    # Get latest version
+                    version_cmd = ["curl", "-s", "https://api.github.com/repos/pdfcpu/pdfcpu/releases/latest"]
+                    version_out = subprocess.check_output(version_cmd).decode()
+                    import re
+                    m = re.search(r'"tag_name":\s*"v([0-9.]+)"', version_out)
+                    if not m:
+                        raise Exception("Could not determine latest pdfcpu version from GitHub API.")
+                    pdfcpu_version = m.group(1)
+                    archive_url = f"https://github.com/pdfcpu/pdfcpu/releases/download/v{pdfcpu_version}/pdfcpu_{pdfcpu_version}_Linux_x86_64.tar.xz"
+                    # Download archive
+                    archive_path = os.path.join(tempfile.gettempdir(), "pdfcpu.tar.xz")
+                    wget_cmd = ["wget", "-qO", archive_path, archive_url]
+                    ret = subprocess.run(wget_cmd)
+                    if ret.returncode != 0 or not os.path.exists(archive_path):
+                        raise Exception(f"Failed to download pdfcpu binary from {archive_url}")
+                    # Extract
+                    extract_dir = os.path.join(tempfile.gettempdir(), "pdfcpu-temp")
+                    if os.path.exists(extract_dir):
+                        shutil.rmtree(extract_dir)
+                    os.makedirs(extract_dir, exist_ok=True)
+                    tar_cmd = ["tar", "xf", archive_path, "--strip-components=1", "-C", extract_dir]
+                    ret = subprocess.run(tar_cmd)
+                    if ret.returncode != 0:
+                        raise Exception("Failed to extract pdfcpu archive.")
+                    pdfcpu_bin = os.path.join(extract_dir, "pdfcpu")
+                    if not os.path.exists(pdfcpu_bin):
+                        raise Exception("pdfcpu binary not found after extraction.")
+                    # Move to /usr/local/bin
+                    import getpass
+                    print("[INFO] pdfcpu install requires sudo. You may be prompted for your password.")
+                    sudo_pw = getpass.getpass(prompt='Enter your sudo password for pdfcpu install (leave blank to try without): ')
+                    mv_cmd = ['sudo', '-S', 'mv', pdfcpu_bin, '/usr/local/bin/pdfcpu']
+                    chmod_cmd = ['sudo', '-S', 'chmod', '+x', '/usr/local/bin/pdfcpu']
+                    if sudo_pw:
+                        mv_proc = subprocess.run(mv_cmd, input=(sudo_pw+'\n').encode(), check=True, timeout=30)
+                        chmod_proc = subprocess.run(chmod_cmd, input=(sudo_pw+'\n').encode(), check=True, timeout=10)
+                    else:
+                        mv_proc = subprocess.run(mv_cmd, check=True, timeout=30)
+                        chmod_proc = subprocess.run(chmod_cmd, check=True, timeout=10)
+                    with open(install_log_file, "a", encoding="utf-8") as ilog:
+                        ilog.write(f"[INFO] pdfcpu binary moved and permissions set.\n")
+                    # Clean up
+                    try:
+                        os.remove(archive_path)
+                        shutil.rmtree(extract_dir)
+                    except Exception:
+                        pass
+                    if shutil.which('pdfcpu'):
+                        with open(install_log_file, "a", encoding="utf-8") as ilog:
+                            ilog.write(f"[INFO] pdfcpu installed successfully.\n")
+                        print("[INFO] pdfcpu installed successfully.")
+                        return True
+                    else:
+                        with open(install_log_file, "a", encoding="utf-8") as ilog:
+                            ilog.write(f"[FATAL] pdfcpu binary was not found in /usr/local/bin after install.\n")
+                        print("[FATAL] pdfcpu binary was not found in /usr/local/bin after install.", file=sys.stderr)
+                except Exception as e:
+                    msg = f"[FATAL] Could not auto-install pdfcpu: {e}"
+                    print(msg, file=sys.stderr)
+                    with open(install_log_file, "a", encoding="utf-8") as ilog:
+                        ilog.write(msg + "\n")
+                    # Try Go install if go is available
+                    go_path = shutil.which('go')
+                    if go_path:
+                        try:
+                            print("[INFO] Attempting to install pdfcpu using Go toolchain...", file=sys.stderr)
+                            with open(install_log_file, "a", encoding="utf-8") as ilog:
+                                ilog.write("[INFO] Attempting to install pdfcpu using Go toolchain...\n")
+                            go_install_cmd = [go_path, 'install', 'github.com/pdfcpu/pdfcpu/cmd/pdfcpu@latest']
+                            env = os.environ.copy()
+                            # Ensure GOBIN is set to $HOME/go/bin if not already
+                            gobin = env.get('GOBIN') or os.path.join(env.get('HOME', ''), 'go', 'bin')
+                            env['GOBIN'] = gobin
+                            ret = subprocess.run(go_install_cmd, env=env)
+                            pdfcpu_bin = os.path.join(gobin, 'pdfcpu')
+                            if os.path.exists(pdfcpu_bin):
+                                import getpass
+                                print("[INFO] pdfcpu (Go) install requires sudo to move binary. You may be prompted for your password.")
+                                sudo_pw = getpass.getpass(prompt='Enter your sudo password for pdfcpu install (leave blank to try without): ')
+                                mv_cmd = ['sudo', '-S', 'mv', pdfcpu_bin, '/usr/local/bin/pdfcpu']
+                                chmod_cmd = ['sudo', '-S', 'chmod', '+x', '/usr/local/bin/pdfcpu']
+                                if sudo_pw:
+                                    mv_proc = subprocess.run(mv_cmd, input=(sudo_pw+'\n').encode(), check=True, timeout=30)
+                                    chmod_proc = subprocess.run(chmod_cmd, input=(sudo_pw+'\n').encode(), check=True, timeout=10)
+                                else:
+                                    mv_proc = subprocess.run(mv_cmd, check=True, timeout=30)
+                                    chmod_proc = subprocess.run(chmod_cmd, check=True, timeout=10)
+                                with open(install_log_file, "a", encoding="utf-8") as ilog:
+                                    ilog.write(f"[INFO] pdfcpu binary moved from Go build and permissions set.\n")
+                                if shutil.which('pdfcpu'):
+                                    with open(install_log_file, "a", encoding="utf-8") as ilog:
+                                        ilog.write(f"[INFO] pdfcpu installed successfully via Go.\n")
+                                    print("[INFO] pdfcpu installed successfully via Go.")
+                                    return True
+                                else:
+                                    with open(install_log_file, "a", encoding="utf-8") as ilog:
+                                        ilog.write(f"[FATAL] pdfcpu binary was not found in /usr/local/bin after Go install.\n")
+                                    print("[FATAL] pdfcpu binary was not found in /usr/local/bin after Go install.", file=sys.stderr)
+                        except Exception as go_e:
+                            go_msg = f"[FATAL] Go install of pdfcpu failed: {go_e}"
+                            print(go_msg, file=sys.stderr)
+                            with open(install_log_file, "a", encoding="utf-8") as ilog:
+                                ilog.write(go_msg + "\n")
+                    # Write flag to avoid repeated attempts
+                    with open(pdfcpu_failed_flag, "w") as flagf:
+                        flagf.write("failed\n")
+                    print("[SYSADMIN] pdfcpu could not be installed automatically. Please install it manually from https://github.com/pdfcpu/pdfcpu/releases or your package manager.", file=sys.stderr)
+                    return False
+        except Exception as e:
+            msg = f"[FATAL] Could not auto-install pdfcpu: {e}"
+            print(msg, file=sys.stderr)
+            with open(install_log_file, "a", encoding="utf-8") as ilog:
+                ilog.write(msg + "\n")
+            # Write flag to avoid repeated attempts
+            with open(pdfcpu_failed_flag, "w") as flagf:
+                flagf.write("failed\n")
+            print("[SYSADMIN] pdfcpu could not be installed automatically. Please install it manually from https://github.com/pdfcpu/pdfcpu/releases or your package manager.", file=sys.stderr)
+            return False
+    # Log all other system tool install attempts and errors
     if shutil.which(tool_name) is not None:
+        with open(install_log_file, "a", encoding="utf-8") as ilog:
+            ilog.write(f"[INFO] {tool_name} already installed.\n")
         return True
     print(f"[INFO] {tool_name} not found. Attempting to install...", file=sys.stderr)
+    with open(install_log_file, "a", encoding="utf-8") as ilog:
+        ilog.write(f"[INFO] {tool_name} not found. Attempting to install...\n")
     for cmd in install_cmds:
         try:
             subprocess.run(cmd, check=True)
             if shutil.which(tool_name) is not None:
+                with open(install_log_file, "a", encoding="utf-8") as ilog:
+                    ilog.write(f"[INFO] {tool_name} installed successfully.\n")
                 print(f"[INFO] {tool_name} installed successfully.")
                 return True
-        except Exception:
+        except Exception as e:
+            with open(install_log_file, "a", encoding="utf-8") as ilog:
+                ilog.write(f"[FATAL] Could not install {tool_name} with command {cmd}: {e}\n")
             continue
+    with open(install_log_file, "a", encoding="utf-8") as ilog:
+        ilog.write(f"[FATAL] Could not install {tool_name} automatically. Please install it manually.\n")
     print(f"[FATAL] Could not install {tool_name} automatically. Please install it manually.", file=sys.stderr)
     return False
 
@@ -470,7 +720,14 @@ def validate_and_repair_pdf(file_path):
         print(f"  [Info] Skipping AppleDouble resource fork: {file_path}", file=sys.stderr)
         skipped_appledouble_files.append(file_path)
         return file_path, False, False, None, None, None
-    is_valid, has_text, pdf_version, pdf_creator, pdf_producer = get_pdf_details(file_path)
+    # Run get_pdf_details with a hard timeout
+    success, result = run_with_timeout(get_pdf_details, args=(file_path,), timeout=120)
+    if not success or isinstance(result, (TimeoutError, RuntimeError, Exception)):
+        print(f"  [Timeout] PDF validation timed out or failed: {file_path}", file=sys.stderr)
+        log_error("PDF_VALIDATION_TIMEOUT", file_path, str(result))
+        failed_pdf_repairs.append(file_path)
+        return file_path, False, False, None, None, None
+    is_valid, has_text, pdf_version, pdf_creator, pdf_producer = result
     if is_valid:
         return file_path, is_valid, has_text, pdf_version, pdf_creator, pdf_producer
     try:
@@ -485,11 +742,23 @@ def validate_and_repair_pdf(file_path):
         skipped_invalid_pdf_files.append(file_path)
         return file_path, False, False, pdf_version, pdf_creator, pdf_producer
     repaired_path = file_path + ".repaired.pdf"
-    if repair_pdf(file_path, repaired_path):
-        is_valid, has_text, pdf_version, pdf_creator, pdf_producer = get_pdf_details(repaired_path)
-        if is_valid:
-            print(f"  [INFO] PDF repaired: {file_path} -> {repaired_path}")
-            return repaired_path, is_valid, has_text, pdf_version, pdf_creator, pdf_producer
+    # Run repair_pdf with a hard timeout
+    success, repair_result = run_with_timeout(repair_pdf, args=(file_path, repaired_path), timeout=180)
+    if not success:
+        print(f"  [Timeout] PDF repair timed out: {file_path}", file=sys.stderr)
+        log_error("PDF_REPAIR_TIMEOUT", file_path, str(repair_result))
+        failed_pdf_repairs.append(file_path)
+        return file_path, False, False, pdf_version, pdf_creator, pdf_producer
+    if repair_result:
+        # Validate the repaired file before accepting it
+        success, repaired_details = run_with_timeout(get_pdf_details, args=(repaired_path,), timeout=60)
+        if success and not isinstance(repaired_details, (TimeoutError, RuntimeError, Exception)):
+            is_valid, has_text, pdf_version, pdf_creator, pdf_producer = repaired_details
+            if is_valid:
+                print(f"  [INFO] PDF repaired and validated: {file_path} -> {repaired_path}")
+                return repaired_path, is_valid, has_text, pdf_version, pdf_creator, pdf_producer
+        print(f"  [Warning] Repaired PDF is still invalid: {repaired_path}", file=sys.stderr)
+        log_error("PDF_REPAIR_INVALID", repaired_path, "Repaired file is still invalid")
     print(f"  [Warning] PDF repair failed or file is too corrupted: {file_path}", file=sys.stderr)
     failed_pdf_repairs.append(file_path)
     return file_path, False, False, pdf_version, pdf_creator, pdf_producer
@@ -536,29 +805,8 @@ def classify_with_isbn_fallback(classifier, filename, full_path, mime_type, isbn
     print(f"  [DEBUG] File {filename} is uncategorized after all attempts.")
     return ('Miscellaneous', None, None)
 
-def analyze_row(row, knowledge_db_path, isbn_cache, pdf_validation):
-    path = str(row.path)
-    try:
-        mime_type = magic.from_file(path, mime=True)
-    except Exception as e:
-        msg = f"Could not determine MIME type: {e}"
-        print(f"  [Warning] {msg} {row.name}", file=sys.stderr)
-        log_error("MIMETYPE_ERROR", path, msg)
-        mime_type = 'unknown/unknown'
-    file_hash = get_file_hash(path)
-    is_pdf, has_ocr, pdf_version, pdf_creator, pdf_producer = pdf_validation.get(path, (False, False, None, None, None))
-    try:
-        classifier = Classifier(knowledge_db_path)
-        system, edition, category = classify_with_isbn_fallback(classifier, row.name, path, mime_type, isbn_cache)
-        classifier.close()
-    except Exception as e:
-        msg = f"Classification failed: {e}"
-        print(f"  [Warning] {msg} {row.name}", file=sys.stderr)
-        log_error("CLASSIFICATION_ERROR", path, msg)
-        system, edition, category = ('Miscellaneous', None, None)
-    return {'hash': file_hash, 'mime_type': mime_type, 'is_pdf_valid': is_pdf, 'has_ocr': has_ocr, 'pdf_version': pdf_version, 'pdf_creator': pdf_creator, 'pdf_producer': pdf_producer, 'game_system': system, 'edition': edition, 'category': category}
-
 def build_library(config):
+    import traceback
     # --- Step 1: Configuration & Setup ---
     SOURCE_PATHS, LIBRARY_ROOT = config['source_paths'], config['library_root']
     MIN_PDF_SIZE_BYTES = config['min_pdf_size_bytes']
@@ -567,12 +815,23 @@ def build_library(config):
     KB_LANGS = config.get('knowledge_base_url_languages', {})
     
     print("--- Starting Library Build Process ---")
+    print("[DEBUG] Entered build_library()")
+    import psutil
+    def print_resource_usage(phase):
+        process = psutil.Process(os.getpid())
+        mem = process.memory_info().rss / (1024*1024)
+        open_files = len(process.open_files()) if hasattr(process, 'open_files') else 'N/A'
+        children = len(process.children(recursive=True))
+        print(f"[RESOURCE] {phase}: RAM={mem:.1f}MB, OpenFiles={open_files}, Children={children}")
+    print_resource_usage('Start')
     os.makedirs(LIBRARY_ROOT, exist_ok=True)
     classifier = Classifier(KNOWLEDGE_DB_FILE)
     isbn_cache = {}  # To avoid redundant ISBN queries
 
     # --- Step 2: File Scanning ---
     print("Step 1: Scanning all source directories for files...")
+    print("[DEBUG] Starting file scan phase")
+    print_resource_usage('Before Scan')
     all_files = list(scan_files(SOURCE_PATHS))
     if not all_files:
         print("No files found in source paths. Exiting.")
@@ -580,39 +839,271 @@ def build_library(config):
         return
     df = pd.DataFrame(all_files)
     print(f"Found {len(df)} total files.")
+    # --- LIMIT FILES FOR TESTING ---
+    # Remove file limit for production run
+    # MAX_TEST_FILES = int(os.environ.get('LIBRARIAN_MAX_TEST_FILES', '1000'))
+    # if len(df) > MAX_TEST_FILES:
+    #     print(f"[DEBUG] Limiting to first {MAX_TEST_FILES} files for testing.")
+    #     df = df.head(MAX_TEST_FILES)
+    print(f"[DEBUG] DataFrame shape: {df.shape}")
+    print("[DEBUG] Starting PDF validation/repair phase")
+    print_resource_usage('Before PDF Validation')
 
     # --- Step 3: Analysis & Classification ---
     print("Step 2: Analyzing and Classifying files (this may take a while)...")
+    print("[DEBUG] Starting classification/hashing phase")
     analysis_results = []
     pdf_paths = [row['path'] for row in all_files if row['name'].lower().endswith('.pdf')]
     pdf_validation = {}
-    max_workers = min(32, (multiprocessing.cpu_count() or 1) * 2)
+    # Lower worker count to avoid resource exhaustion
+    max_workers = min(8, (multiprocessing.cpu_count() or 1))
     # PDF validation/repair with progress
     if HAS_TQDM:
         pdf_iter = tqdm(pdf_paths, desc="Validating/Repairing PDFs", unit="pdf")
     else:
         print("Validating/Repairing PDFs...")
         pdf_iter = pdf_paths
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(validate_and_repair_pdf, path): path for path in pdf_iter}
-        for i, future in enumerate(as_completed(futures)):
-            path, is_valid, has_ocr, pdf_version, pdf_creator, pdf_producer = future.result()
-            pdf_validation[path] = (is_valid, has_ocr, pdf_version, pdf_creator, pdf_producer)
-            if not HAS_TQDM and (i+1) % 10 == 0:
-                print(f"  Processed {i+1}/{len(pdf_paths)} PDFs...")
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(validate_and_repair_pdf, path): path for path in pdf_iter}
+            for i, future in enumerate(as_completed(futures)):
+                try:
+                    path, is_valid, has_ocr, pdf_version, pdf_creator, pdf_producer = future.result(timeout=300)
+                    pdf_validation[path] = (is_valid, has_ocr, pdf_version, pdf_creator, pdf_producer)
+                except Exception as e:
+                    print(f"[ERROR] PDF validation/repair failed or hung for a file: {e}", file=sys.stderr)
+                if (i+1) % 100 == 0:
+                    print_resource_usage(f'PDF Validation {i+1}')
+                if not HAS_TQDM and (i+1) % 10 == 0:
+                    print(f"  Processed {i+1}/{len(pdf_paths)} PDFs...")
+    except Exception as e:
+        print(f"[FATAL] Exception in PDF validation/repair phase: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+    print_resource_usage('After PDF Validation')
+    # --- Wait for all child processes to exit before next phase ---
+    import gc, time
+    process = psutil.Process(os.getpid())
+    max_wait = 30
+    waited = 0
+    while True:
+        children = process.children(recursive=True)
+        if not children:
+            break
+        print(f"[DEBUG] Waiting for {len(children)} child processes to exit before classification... (waited {waited}s)")
+        time.sleep(1)
+        waited += 1
+        if waited >= max_wait:
+            print(f"[WARNING] Some child processes still running after {max_wait}s, proceeding anyway.", file=sys.stderr)
+            break
+    gc.collect()
+    print("[DEBUG] All child processes from PDF validation/repair cleaned up. Proceeding to classification/hashing.")
     # Classification/analysis with progress
     knowledge_db_path = config.get('knowledge_base_db_url') or "knowledge.sqlite"
+    print("[DEBUG] Preparing analyze_row_partial for classification/hashing phase")
     analyze_row_partial = partial(analyze_row, knowledge_db_path=knowledge_db_path, isbn_cache=isbn_cache, pdf_validation=pdf_validation)
-    if HAS_TQDM:
-        row_iter = tqdm(list(df.itertuples(index=False)), desc="Classifying/Hashing", unit="file")
-    else:
-        print("Classifying/Hashing files...")
-        row_iter = list(df.itertuples(index=False))
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        analysis_results = list(executor.map(analyze_row_partial, row_iter))
+    print("[DEBUG] analyze_row_partial created")
+    print_resource_usage('Before Hashing/Classification')
+    # --- Step 3b: Hashing/Classification Phase ---
+    print("[DEBUG] Creating row_iter for classification/hashing phase")
+    try:
+        # Convert DataFrame to list of dicts for picklable row objects
+        row_dicts = df.to_dict('records')
+        # Ensure all rows have a 'path' key
+        for r in row_dicts:
+            if 'path' not in r:
+                print(f"[FATAL] Row missing 'path' key: {r}", file=sys.stderr)
+        if HAS_TQDM:
+            row_iter = tqdm(row_dicts, desc="Classifying/Hashing", unit="file")
+        else:
+            print("Classifying/Hashing files...")
+            row_iter = row_dicts
+        print(f"[DEBUG] row_iter created, length: {len(row_iter)}")
+    except Exception as e:
+        print(f"[FATAL] Exception while creating row_iter: {e}", file=sys.stderr)
+        traceback.print_exc()
+        return
+    # --- Hashing/analysis with robust error handling and progress ---
+    analysis_results = []
+    error_log_path = "hashing_analysis_errors.log"
+    print("[DEBUG] Entering classification/hashing ProcessPoolExecutor")
+    try:
+        # Reduce max_workers for lower resource usage
+        pool_workers = min(2, max_workers)
+        print(f"[DEBUG] Using max_workers={pool_workers} for ProcessPoolExecutor")
+        with ProcessPoolExecutor(max_workers=pool_workers) as executor:
+            print("[DEBUG] ProcessPoolExecutor created for hashing/classification")
+            future_to_row = {}
+            for idx, row in enumerate(row_iter):
+                if idx % 100 == 0:
+                    print(f"[DEBUG] Submitting analyze_row_partial for row {idx} path={row.get('path', 'unknown')}")
+                future = executor.submit(analyze_row_partial, row)
+                future_to_row[future] = row
+            print(f"[DEBUG] All {len(future_to_row)} futures submitted to pool")
+            completed = 0
+            total = len(future_to_row)
+            for future in as_completed(future_to_row):
+                row = future_to_row[future]
+                try:
+                    result = future.result(timeout=300)
+                    analysis_results.append(result)
+                    print(f"[DEBUG] analyze_row_partial completed for {row.get('path', 'unknown')}")
+                except Exception as e:
+                    with open(error_log_path, "a", encoding="utf-8") as elog:
+                        elog.write(f"[ERROR] During hashing/analysis of file: {row.get('path', 'unknown')}\n  Exception: {e}\n")
+                    print(f"[ERROR] Hashing/analysis failed or hung for {row.get('path', 'unknown')}: {e}", file=sys.stderr)
+                completed += 1
+                if (completed) % 100 == 0:
+                    print_resource_usage(f'Hashing/Classification {completed}')
+                    print(f"[DEBUG] {completed}/{total} files classified/hashed")
+                if HAS_TQDM:
+                    tqdm.write(f"[Progress] Hashing/analysis: {completed}/{total} ({(completed/total)*100:.1f}%)")
+                elif completed % max(1, total//10) == 0:
+                    print(f"[Progress] Hashing/analysis: {completed}/{total} ({(completed/total)*100:.1f}%)", file=sys.stderr)
+    except Exception as e:
+        print(f"[FATAL] Exception in classification/hashing phase: {e}", file=sys.stderr)
+        traceback.print_exc()
+    print_resource_usage('After Hashing/Classification')
+    print(f"[DEBUG] Hashing/Classification phase complete. analysis_results length: {len(analysis_results)}")
+    if os.path.exists(error_log_path):
+        print(f"[SYSADMIN] See {error_log_path} for details on hashing/analysis errors.", file=sys.stderr)
+        # Also append these errors to librarian_run.log for unified sysadmin review
+        try:
+            with open(error_log_path, "r", encoding="utf-8") as elog, open(LOG_FILE, "a", encoding="utf-8") as llog:
+                llog.write("\n[SYSADMIN] Hashing/analysis errors (copied from hashing_analysis_errors.log):\n")
+                for line in elog:
+                    llog.write(line)
+        except Exception as e:
+            print(f"[SYSADMIN] Could not append hashing/analysis errors to {LOG_FILE}: {e}", file=sys.stderr)
+    if not analysis_results:
+        print("[FATAL] No analysis results produced. Skipping deduplication and copy/index phases.", file=sys.stderr)
+        return
+    df = pd.concat([df, pd.DataFrame(analysis_results)], axis=1).dropna(subset=['hash'])
+def analyze_row(row, knowledge_db_path, isbn_cache, pdf_validation):
+    """
+    Analyze a file row: detect mime, hash, PDF validity, OCR, classify, and extract metadata.
+    Returns a dict with analysis results for DataFrame concat.
+    """
+    import mimetypes
+    from pathlib import Path
+    # Defensive: row may be a namedtuple or dict
+    path = getattr(row, 'path', None) or row.get('path')
+    name = getattr(row, 'name', None) or row.get('name')
+    size = getattr(row, 'size', None) or row.get('size')
+    mime_type = None
+    try:
+        mime_type = magic_from_file(path)
+    except Exception:
+        mime_type = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+    # Hashing
+    file_hash = get_file_hash(path)
+    # PDF validation/repair results
+    is_pdf_valid = None
+    has_ocr = None
+    pdf_version = None
+    pdf_creator = None
+    pdf_producer = None
+    if name.lower().endswith('.pdf'):
+        # Use precomputed validation if available
+        pdf_info = pdf_validation.get(path)
+        if pdf_info:
+            is_pdf_valid, has_ocr, pdf_version, pdf_creator, pdf_producer = pdf_info
+        else:
+            # Defensive: run validation if not present
+            _, is_pdf_valid, has_ocr, pdf_version, pdf_creator, pdf_producer = validate_and_repair_pdf(path)
+    # Classification
+    classifier = Classifier(knowledge_db_path)
+    game_system, edition, category = classify_with_isbn_fallback(classifier, name, path, mime_type, isbn_cache)
+    # Language detection (optional, placeholder)
+    language = None
+    # Clean up classifier connection
+    try:
+        classifier.close()
+    except Exception:
+        pass
+    return {
+        'mime_type': mime_type,
+        'hash': file_hash,
+        'is_pdf_valid': is_pdf_valid,
+        'has_ocr': has_ocr,
+        'pdf_version': pdf_version,
+        'pdf_creator': pdf_creator,
+        'pdf_producer': pdf_producer,
+        'game_system': game_system,
+        'edition': edition,
+        'category': category,
+        'language': language
+    }
+    print("[DEBUG] Creating row_iter for classification/hashing phase")
+    try:
+        if HAS_TQDM:
+            row_iter = tqdm(list(df.itertuples(index=False)), desc="Classifying/Hashing", unit="file")
+        else:
+            print("Classifying/Hashing files...")
+            row_iter = list(df.itertuples(index=False))
+        print(f"[DEBUG] row_iter created, length: {len(row_iter)}")
+    except Exception as e:
+        print(f"[FATAL] Exception while creating row_iter: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return
+    # --- Hashing/analysis with robust error handling and progress ---
+    analysis_results = []
+    error_log_path = "hashing_analysis_errors.log"
+    print("[DEBUG] Entering classification/hashing ProcessPoolExecutor")
+    try:
+        # Reduce max_workers for lower resource usage
+        pool_workers = min(2, max_workers)
+        print(f"[DEBUG] Using max_workers={pool_workers} for ProcessPoolExecutor")
+        with ProcessPoolExecutor(max_workers=pool_workers) as executor:
+            print("[DEBUG] ProcessPoolExecutor created for hashing/classification")
+            future_to_row = {}
+            for idx, row in enumerate(row_iter):
+                if idx % 100 == 0:
+                    print(f"[DEBUG] Submitting analyze_row_partial for row {idx}")
+                future = executor.submit(analyze_row_partial, row)
+                future_to_row[future] = row
+            print(f"[DEBUG] All {len(future_to_row)} futures submitted to pool")
+            completed = 0
+            total = len(future_to_row)
+            for future in as_completed(future_to_row):
+                row = future_to_row[future]
+                try:
+                    result = future.result(timeout=300)
+                    analysis_results.append(result)
+                    print(f"[DEBUG] analyze_row_partial completed for {getattr(row, 'path', 'unknown')}")
+                except Exception as e:
+                    with open(error_log_path, "a", encoding="utf-8") as elog:
+                        elog.write(f"[ERROR] During hashing/analysis of file: {getattr(row, 'path', 'unknown')}\n  Exception: {e}\n")
+                    print(f"[ERROR] Hashing/analysis failed or hung for {getattr(row, 'path', 'unknown')}: {e}", file=sys.stderr)
+                completed += 1
+                if (completed) % 100 == 0:
+                    print_resource_usage(f'Hashing/Classification {completed}')
+                    print(f"[DEBUG] {completed}/{total} files classified/hashed")
+                if HAS_TQDM:
+                    tqdm.write(f"[Progress] Hashing/analysis: {completed}/{total} ({(completed/total)*100:.1f}%)")
+                elif completed % max(1, total//10) == 0:
+                    print(f"[Progress] Hashing/analysis: {completed}/{total} ({(completed/total)*100:.1f}%)", file=sys.stderr)
+    except Exception as e:
+        print(f"[FATAL] Exception in classification/hashing phase: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+    print_resource_usage('After Hashing/Classification')
+    if os.path.exists(error_log_path):
+        print(f"[SYSADMIN] See {error_log_path} for details on hashing/analysis errors.", file=sys.stderr)
+        # Also append these errors to librarian_run.log for unified sysadmin review
+        try:
+            with open(error_log_path, "r", encoding="utf-8") as elog, open(LOG_FILE, "a", encoding="utf-8") as llog:
+                llog.write("\n[SYSADMIN] Hashing/analysis errors (copied from hashing_analysis_errors.log):\n")
+                for line in elog:
+                    llog.write(line)
+        except Exception as e:
+            print(f"[SYSADMIN] Could not append hashing/analysis errors to {LOG_FILE}: {e}", file=sys.stderr)
     df = pd.concat([df, pd.DataFrame(analysis_results)], axis=1).dropna(subset=['hash'])
     # --- Step 4: Deduplication & Selection ---
     print("Step 3: Deduplicating based on content and selecting best files...")
+    print("[DEBUG] Starting deduplication/selection phase")
+    print_resource_usage('Before Deduplication')
     df['quality_score'] = 0
     # Fix: increment quality_score only for numeric rows
     def safe_add_quality(row, add):
@@ -632,6 +1123,8 @@ def build_library(config):
 
     # --- Step 5: Copy & Index ---
     print("Step 4: Copying files into new structure and building search index...")
+    print("[DEBUG] Starting copy/index phase")
+    print_resource_usage('Before Copy/Index')
     db_path = os.path.join(LIBRARY_ROOT, DB_FILE)
     if os.path.exists(db_path):
         try:
@@ -718,45 +1211,56 @@ def build_library(config):
         print(f"  See {LOG_FILE} for details and file paths.")
     else:
         print("  No errors or warnings logged.")
-
-def set_resource_limits():
-    """Set resource limits to maximize open files and RAM usage, but keep system stable."""
+    # Merge install log into run log for sysadmin review
     try:
-        # Set max open files (soft, hard)
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        max_files = min(hard, max(4096, (multiprocessing.cpu_count() or 1) * 4096))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (max_files, hard))
-        print(f"[INFO] Set max open files to {max_files}")
+        merge_install_log_into_run_log()
     except Exception as e:
-        print(f"[Warning] Could not set max open files: {e}", file=sys.stderr)
-    try:
-        # Set max address space (RAM) to 90% of system memory, but not unlimited
-        total_mem = psutil.virtual_memory().total
-        max_mem = int(total_mem * 0.9)
-        resource.setrlimit(resource.RLIMIT_AS, (max_mem, resource.RLIM_INFINITY))
-        print(f"[INFO] Set max RAM usage to {max_mem // (1024**2)} MB")
-    except Exception as e:
-        print(f"[Warning] Could not set max RAM usage: {e}", file=sys.stderr)
+        print(f"[SYSADMIN] Could not merge install log into run log: {e}", file=sys.stderr)
 
-# --- Main Execution Block ---
-if __name__ == '__main__':
-    set_resource_limits()
+# --- Print log summary (aggregated, in-memory) ---
+    print("\n--- Error/Warning Summary (Aggregated) ---")
+    if _error_counts:
+        from collections import defaultdict
+        type_counts = defaultdict(int)
+        for (etype, fpath, msg), count in _error_counts.items():
+            type_counts[etype] += count
+        for etype, count in type_counts.items():
+            print(f"  {etype}: {count} occurrences")
+        print(f"  See {LOG_FILE} for details and file paths.")
+        # Optionally, print most frequent errors/files
+        most_common = sorted(_error_counts.items(), key=lambda x: -x[1])[:5]
+        if most_common:
+            print("  Most frequent errors:")
+            for (etype, fpath, msg), count in most_common:
+                print(f"    [{etype}] {fpath} | {msg} (x{count})")
+    else:
+        print("  No errors or warnings logged.")
+
+def merge_install_log_into_run_log():
+    """Append the install log to the run log for unified sysadmin review, if not already present."""
     try:
+        if not os.path.exists(INSTALL_LOG_FILE) or not os.path.exists(LOG_FILE):
+            return
+        with open(INSTALL_LOG_FILE, "r", encoding="utf-8") as ilog:
+            install_lines = ilog.readlines()
+        with open(LOG_FILE, "r", encoding="utf-8") as rlog:
+            run_lines = rlog.readlines()
+        # Only append lines not already present
+        new_lines = [line for line in install_lines if line not in run_lines]
+        if new_lines:
+            with open(LOG_FILE, "a", encoding="utf-8") as rlog:
+                rlog.writelines(["\n[INSTALL LOG MERGED]\n"] + new_lines)
+    except Exception as e:
+        print(f"[SYSADMIN] Error merging install log: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    import traceback
+    try:
+        config_path = os.environ.get("LIBRARIAN_CONFIG", os.path.join(os.path.dirname(__file__), "../conf/config.ini"))
+        print(f"[INFO] Loading config from: {config_path}")
         config = load_config()
-        # Allow knowledge_base_urls to specify a remote DB file
-        knowledge_db_url = config.get('knowledge_base_db_url')
-        if knowledge_db_url:
-            config['knowledge_base_db_url'] = knowledge_db_url.strip()
-        if not config['source_paths'] or "/path/to/" in config['source_paths'][0]:
-             print("[FATAL] Configuration Error: 'source_paths' is not set in conf/config.ini.", file=sys.stderr)
-             sys.exit(1)
-        if not config['library_root'] or "/path/to/" in config['library_root']:
-             print("[FATAL] Configuration Error: 'library_root' is not set in conf/config.ini.", file=sys.stderr)
-             sys.exit(1)
         build_library(config)
-    except FileNotFoundError as e:
-        print(f"[FATAL] A required file was not found. Please check your setup. Error: {e}", file=sys.stderr)
-        sys.exit(1)
     except Exception as e:
-        print(f"[FATAL] An unexpected error occurred: {e}", file=sys.stderr)
+        print(f"[FATAL] Unhandled exception in librarian.py: {e}", file=sys.stderr)
+        traceback.print_exc()
         sys.exit(1)
