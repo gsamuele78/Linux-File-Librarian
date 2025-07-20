@@ -1,3 +1,23 @@
+# --- Dependency Checks with auto-install for all required modules ---
+REQUIRED_MODULES = [
+    ("fitz", "pymupdf"),
+    ("requests", "requests"),
+]
+import sys
+for mod, pipname in REQUIRED_MODULES:
+    try:
+        globals()[mod] = __import__(mod)
+    except ImportError:
+        print(f"[INFO] {mod} not found. Attempting to install {pipname}...", file=sys.stderr)
+        import subprocess
+        try:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', pipname])
+            globals()[mod] = __import__(mod)
+            print(f"[INFO] {mod} installed successfully.")
+        except Exception as e:
+            print(f"[FATAL] Could not install {pipname} automatically: {e}", file=sys.stderr)
+            sys.exit(1)
+
 import re
 import requests
 import sys
@@ -18,11 +38,23 @@ def extract_isbns_from_file(filepath):
             with fitz.open(filepath) as doc:
                 text = ""
                 for page in doc:
+                    page_text = ''
+                    get_text_fn = getattr(page, 'get_text', None)
+                    getText_fn = getattr(page, 'getText', None)
                     try:
-                        page_text = page.get_text("text")
-                    except AttributeError:
-                        page_text = page.getText("text")
-                    text += page_text
+                        if callable(get_text_fn):
+                            page_text = get_text_fn("text")
+                        elif callable(getText_fn):
+                            page_text = getText_fn("text")
+                        else:
+                            print(f"[WARN] PyMuPDF page object has no get_text or getText method for {filepath}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"[WARN] Could not extract text from page in {filepath}: {e}", file=sys.stderr)
+                        page_text = ''
+                    if isinstance(page_text, str):
+                        text += page_text
+                    elif page_text is not None:
+                        text += str(page_text)
                 return extract_isbns_from_text(text)
         else:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:

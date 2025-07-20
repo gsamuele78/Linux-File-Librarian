@@ -339,52 +339,129 @@ def scan_files(source_paths):
                     print(f"  [Warning] Could not stat file {p.name}. Skipping. Reason: {e}", file=sys.stderr)
 
 def repair_pdf(input_path, output_path):
-    """Attempt to repair a PDF using qpdf. Returns True if successful."""
+    """Attempt to repair a PDF using qpdf. Tries --repair, then --linearize, then PyMuPDF, then Ghostscript, then pdftocairo as fallback. Returns True if successful.
+    Example Ghostscript command:
+      gs -o repaired.pdf -sDEVICE=pdfwrite -dPDFSETTINGS=/prepress corrupted.pdf
+    Example pdftocairo command:
+      pdftocairo -pdf corrupted.pdf repaired.pdf
+    """
+    import shutil
+    import subprocess
+    # Ensure ghostscript and pdftocairo are installed (robust: skip if already installed)
+    try:
+        ensure_system_tool_installed('gs', [['sudo', 'apt-get', 'install', '-y', 'ghostscript'], ['sudo', 'dnf', 'install', '-y', 'ghostscript'], ['sudo', 'yum', 'install', '-y', 'ghostscript']])
+    except Exception as e:
+        print(f"  [Warning] Could not ensure ghostscript: {e}", file=sys.stderr)
+    try:
+        ensure_system_tool_installed('pdftocairo', [['sudo', 'apt-get', 'install', '-y', 'poppler-utils'], ['sudo', 'dnf', 'install', '-y', 'poppler-utils'], ['sudo', 'yum', 'install', '-y', 'poppler-utils']])
+    except Exception as e:
+        print(f"  [Warning] Could not ensure pdftocairo: {e}", file=sys.stderr)
+    # Remove output_path if it exists to avoid stale file issues
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+        except Exception:
+            pass
     try:
         result = subprocess.run(['qpdf', '--repair', input_path, output_path], check=True, capture_output=True)
-        return os.path.exists(output_path)
+        if os.path.exists(output_path):
+            return True
     except Exception as e:
-        msg = f"Could not repair PDF: {e}"
+        msg = f"Could not repair PDF with --repair: {e}"
         print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
         log_error("PDF_REPAIR_ERROR", input_path, msg)
-        return False
+    # Try --linearize as a fallback
+    try:
+        result = subprocess.run(['qpdf', '--linearize', input_path, output_path], check=True, capture_output=True)
+        if os.path.exists(output_path):
+            print(f"  [INFO] PDF repaired with --linearize: {input_path} -> {output_path}")
+            log_error("PDF_REPAIR_LINEARIZE", input_path, "Repaired with --linearize")
+            return True
+    except Exception as e:
+        msg = f"Could not repair PDF with --linearize: {e}"
+        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
+        log_error("PDF_REPAIR_ERROR", input_path, msg)
+    # Try to extract pages with PyMuPDF as a last resort
+    try:
+        import fitz
+        doc = fitz.open(input_path)
+        if doc.page_count > 0:
+            doc.save(output_path)
+            print(f"  [INFO] PDF re-saved with PyMuPDF: {input_path} -> {output_path}")
+            log_error("PDF_REPAIR_PYMUPDF", input_path, "Re-saved with PyMuPDF")
+            return True
+    except Exception as e:
+        msg = f"Could not re-save PDF with PyMuPDF: {e}"
+        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
+        log_error("PDF_REPAIR_ERROR", input_path, msg)
+    # Try Ghostscript as a fallback
+    try:
+        gs_cmd = ['gs', '-o', output_path, '-sDEVICE=pdfwrite', '-dPDFSETTINGS=/prepress', input_path]
+        result = subprocess.run(gs_cmd, check=True, capture_output=True)
+        if os.path.exists(output_path):
+            print(f"  [INFO] PDF repaired with Ghostscript: {input_path} -> {output_path}")
+            log_error("PDF_REPAIR_GHOSTSCRIPT", input_path, "Repaired with Ghostscript")
+            return True
+    except Exception as e:
+        msg = f"Could not repair PDF with Ghostscript: {e}"
+        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
+        log_error("PDF_REPAIR_ERROR", input_path, msg)
+    # Try pdftocairo as a final fallback
+    try:
+        pdftocairo_cmd = ['pdftocairo', '-pdf', input_path, output_path]
+        result = subprocess.run(pdftocairo_cmd, check=True, capture_output=True)
+        if os.path.exists(output_path):
+            print(f"  [INFO] PDF repaired with pdftocairo: {input_path} -> {output_path}")
+            log_error("PDF_REPAIR_PDFTOCAIRO", input_path, "Repaired with pdftocairo")
+            return True
+    except Exception as e:
+        msg = f"Could not repair PDF with pdftocairo: {e}"
+        print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
+        log_error("PDF_REPAIR_ERROR", input_path, msg)
+    return False
 
+def ensure_system_tool_installed(tool_name, install_cmds):
+    """Ensure a system tool is installed, try to install if missing."""
+    import shutil
+    if shutil.which(tool_name) is not None:
+        return True
+    print(f"[INFO] {tool_name} not found. Attempting to install...", file=sys.stderr)
+    for cmd in install_cmds:
+        try:
+            subprocess.run(cmd, check=True)
+            if shutil.which(tool_name) is not None:
+                print(f"[INFO] {tool_name} installed successfully.")
+                return True
+        except Exception:
+            continue
+    print(f"[FATAL] Could not install {tool_name} automatically. Please install it manually.", file=sys.stderr)
+    return False
+
+
+# Ensure qpdf is installed before any PDF repair attempts
 def ensure_qpdf_installed():
-    """Check if qpdf is installed, and attempt to install it if not."""
+    """Ensure qpdf is installed, try to install if missing."""
+    import shutil
+    import subprocess
     if shutil.which('qpdf') is not None:
         return True
-    print("[INFO] qpdf not found. Attempting to install qpdf using system package manager...", file=sys.stderr)
-    import platform
-    import subprocess
-    try:
-        distro = platform.system().lower()
-        if distro == 'linux':
-            # Try apt-get, then dnf, then yum
-            for cmd in [['sudo', 'apt-get', 'update'], ['sudo', 'apt-get', 'install', '-y', 'qpdf'],
-                        ['sudo', 'dnf', 'install', '-y', 'qpdf'], ['sudo', 'yum', 'install', '-y', 'qpdf']]:
-                try:
-                    subprocess.run(cmd, check=True)
-                    if shutil.which('qpdf') is not None:
-                        print("[INFO] qpdf installed successfully.")
-                        return True
-                except Exception:
-                    continue
-        elif distro == 'darwin':
-            # macOS
-            subprocess.run(['brew', 'install', 'qpdf'], check=True)
+    print("[INFO] qpdf not found. Attempting to install...", file=sys.stderr)
+    install_cmds = [
+        ['sudo', 'apt-get', 'install', '-y', 'qpdf'],
+        ['sudo', 'dnf', 'install', '-y', 'qpdf'],
+        ['sudo', 'yum', 'install', '-y', 'qpdf']
+    ]
+    for cmd in install_cmds:
+        try:
+            subprocess.run(cmd, check=True)
             if shutil.which('qpdf') is not None:
                 print("[INFO] qpdf installed successfully.")
                 return True
-        elif distro == 'windows':
-            print("[FATAL] Please install qpdf manually on Windows.", file=sys.stderr)
-            return False
-    except Exception as e:
-        print(f"[FATAL] Could not install qpdf automatically: {e}", file=sys.stderr)
-        return False
-    print("[FATAL] qpdf could not be installed automatically. Please install it manually.", file=sys.stderr)
+        except Exception:
+            continue
+    print("[FATAL] Could not install qpdf automatically. Please install it manually.", file=sys.stderr)
     return False
 
-# Ensure qpdf is installed before any PDF repair attempts
 ensure_qpdf_installed()
 
 # --- Parallel PDF validation and repair ---
