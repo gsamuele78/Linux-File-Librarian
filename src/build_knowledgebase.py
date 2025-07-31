@@ -5,9 +5,12 @@ import re
 import os
 import time
 import sys
+import gc
 from urllib.parse import urljoin, urlparse
 from src.config_loader import load_config
 import concurrent.futures
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # --- Configuration ---
 DB_FILE = "knowledge.sqlite"
@@ -57,24 +60,60 @@ def is_scraping_allowed(url):
         print(f"[WARNING] Could not check robots.txt for {url}: {e}", file=sys.stderr)
         return True  # Fail open
 
-def safe_request(url, retries=5, delay=2):
+# Global session with connection pooling
+_session = None
+
+def get_session():
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=20)
+        _session.mount("http://", adapter)
+        _session.mount("https://", adapter)
+        _session.headers.update(HEADERS)
+    return _session
+
+def safe_request(url, retries=3, delay=2):
     """
     Makes a web request with retries and handles network errors robustly.
     Returns BeautifulSoup object or None.
-    Now with exponential backoff.
+    Uses connection pooling for better resource management.
     """
+    session = get_session()
+    
     for attempt in range(retries):
         try:
-            response = requests.get(url, headers=HEADERS, timeout=15)
+            response = session.get(url, timeout=15)
             response.raise_for_status()
-            if 'text/html' not in response.headers.get('Content-Type', ''):
-                print(f"  [ERROR] Non-HTML content at {url}", file=sys.stderr)
+            
+            content_type = response.headers.get('Content-Type', '')
+            if 'text/html' not in content_type and 'text/xml' not in content_type:
+                print(f"  [ERROR] Non-HTML/XML content at {url}: {content_type}", file=sys.stderr)
                 return None
-            return BeautifulSoup(response.content, 'lxml')
+            
+            # Use lxml parser with error handling
+            try:
+                soup = BeautifulSoup(response.content, 'lxml')
+            except Exception:
+                # Fallback to html.parser
+                soup = BeautifulSoup(response.content, 'html.parser')
+            
+            return soup
+            
         except requests.exceptions.RequestException as e:
             print(f"  [ERROR] Could not fetch {url} (attempt {attempt+1}/{retries}): {e}", file=sys.stderr)
             if attempt < retries - 1:
                 time.sleep(delay * (2 ** attempt))
+        except Exception as e:
+            print(f"  [ERROR] Unexpected error fetching {url}: {e}", file=sys.stderr)
+            break
+    
     return None
 
 def normalize_whitespace(text):
@@ -130,27 +169,52 @@ def check_robots_and_prompt(url):
 def parallel_map_parse(parse_func, url_list, *args, **kwargs):
     """
     Utility to parallelize parsing of multiple URLs/sections.
-    parse_func: function to call for each url/section, must return a list of products or None.
-    url_list: list of URLs or (section, url) tuples.
-    Returns: list of all products found.
+    Enhanced with resource management and memory cleanup.
     """
     results = []
     errors = []
+    
+    # Limit concurrent workers based on list size
+    max_workers = min(3, len(url_list), os.cpu_count() or 2)
+    
     def safe_parse(item):
         try:
-            return parse_func(item, *args, **kwargs)
+            result = parse_func(item, *args, **kwargs)
+            # Force cleanup after each parse
+            gc.collect()
+            return result
         except Exception as e:
             print(f"  [ERROR] Exception in parallel parse for {item}: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
             errors.append((item, str(e)))
             return []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_item = {executor.submit(safe_parse, item): item for item in url_list}
-        for future in concurrent.futures.as_completed(future_to_item):
-            res = future.result()
-            if res:
-                results.extend(res)
+    
+    # Process in smaller batches to prevent memory buildup
+    batch_size = max(1, len(url_list) // max_workers)
+    
+    for i in range(0, len(url_list), batch_size):
+        batch = url_list[i:i + batch_size]
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
+            future_to_item = {executor.submit(safe_parse, item): item for item in batch}
+            
+            for future in concurrent.futures.as_completed(future_to_item, timeout=300):
+                try:
+                    res = future.result(timeout=60)
+                    if res:
+                        results.extend(res)
+                except concurrent.futures.TimeoutError:
+                    item = future_to_item[future]
+                    print(f"  [ERROR] Timeout parsing {item}", file=sys.stderr)
+                    errors.append((item, "Timeout"))
+                except Exception as e:
+                    item = future_to_item[future]
+                    print(f"  [ERROR] Future exception for {item}: {e}", file=sys.stderr)
+                    errors.append((item, str(e)))
+        
+        # Cleanup between batches
+        gc.collect()
+        time.sleep(0.5)  # Brief pause between batches
+    
     return results, errors
 
 # --- Specialized Parsers (All Parsers Fully Implemented) ---
@@ -431,6 +495,7 @@ def parse_tsr_table_products(soup, section_text, lang, section_url, conn):
     Enhanced: Parse all <td> in main tables, extract product code, module code, title, and category from column header.
     Returns a list of tuples for DB insertion if conn is None, else inserts directly and returns count.
     Now with improved debug output, robust English table parsing, fallback for missing headers, better product splitting/normalization, and multi-product extraction per cell.
+    Enhanced with better pattern matching and error recovery.
     """
     total_added = 0
     table_count = 0
@@ -516,38 +581,96 @@ def parse_tsr_table_products(soup, section_text, lang, section_url, conn):
                                 products.append((product_code, full_title, game_system, edition, category, "Italian", section_url))
                                 seen_products.add(key)
                     continue
-                # --- English/Default logic: extract all product code+title pairs in cell ---
-                # Regex: product code (optionally module code) + title, repeated
-                # Example: 9193 GAZ1 The Grand Duchy of Karameikos 9194 GAZ2 The Emirates of Ylaruam
-                # Pattern: (code) (optional module code) (title until next code or end)
-                product_pattern = re.compile(r'(\S+)(?:\s+([A-Z]{1,4}\d{1,3}))?\s+([^\d]+?)(?=\s+\S+\s+[A-Z]{0,4}\d{1,5}\s+|\s+\S+\s+[^A-Z\d]|$)')
-                matches = list(product_pattern.finditer(cell_text))
+                # --- Enhanced English/Default logic: multiple pattern attempts ---
+                patterns = [
+                    # Pattern 1: code + optional module + title
+                    re.compile(r'(\S+)(?:\s+([A-Z]{1,4}\d{1,3}))?\s+([^\d]+?)(?=\s+\S+\s+[A-Z]{0,4}\d{1,5}\s+|\s+\S+\s+[^A-Z\d]|$)'),
+                    # Pattern 2: simple code + title
+                    re.compile(r'(\d{4,5}|[A-Z]{1,4}\d{1,5})\s+(.+?)(?=\s+\d{4,5}|\s+[A-Z]{1,4}\d{1,5}|$)'),
+                    # Pattern 3: any word + title
+                    re.compile(r'(\S+)\s+([A-Z][^\n]{5,100})'),
+                ]
+                
+                matches = []
+                for pattern in patterns:
+                    matches = list(pattern.finditer(cell_text))
+                    if matches:
+                        break
+                
+                # Enhanced fallback with multiple attempts
                 if not matches:
-                    # fallback: try to match code + title at start
-                    m = re.match(r'^(\S+)\s+(.*)', cell_text)
-                    if m and len(m.groups()) >= 2:
-                        matches = [m]
+                    fallback_patterns = [
+                        r'^(\S+)\s+(.*)',
+                        r'(\d+)\s*[:-]\s*(.+)',
+                        r'([A-Z]+\d+)\s+(.+)',
+                    ]
+                    for fb_pattern in fallback_patterns:
+                        m = re.match(fb_pattern, cell_text)
+                        if m and len(m.groups()) >= 2:
+                            matches = [m]
+                            break
                 if len(matches) > 1:
                     print(f"        [MULTI-PRODUCT] Found {len(matches)} products in one cell [LANG: {lang}]")
                 for match in matches:
-                    if hasattr(match, 'groups'):
-                        product_code = match.group(1).upper()
-                        module_code = match.group(2) if len(match.groups()) > 2 else None
-                        title = match.group(3).strip() if len(match.groups()) > 2 else match.group(2).strip()
-                    else:
-                        product_code = match.group(1).upper()
-                        title = match.group(2).strip()
-                        module_code = None
-                    if not title or len(title) < 2:
-                        print(f"        [SKIP ROW] No valid title in match: '{cell_text}' [LANG: {lang}]")
+                    try:
+                        if hasattr(match, 'groups'):
+                            product_code = match.group(1).upper() if match.group(1) else None
+                            if len(match.groups()) > 2 and match.group(3):
+                                module_code = match.group(2) if match.group(2) else None
+                                title = match.group(3).strip()
+                            else:
+                                module_code = None
+                                title = match.group(2).strip() if len(match.groups()) > 1 else match.group(1)
+                        else:
+                            product_code = match.group(1).upper() if match.group(1) else None
+                            title = match.group(2).strip() if len(match.groups()) > 1 else cell_text.strip()
+                            module_code = None
+                        
+                        # Enhanced title validation and cleanup
+                        if not title or len(title) < 2:
+                            print(f"        [SKIP ROW] No valid title in match: '{cell_text}' [LANG: {lang}]")
+                            continue
+                        
+                        # Clean up title
+                        title = re.sub(r'^[\s\-:]+|[\s\-:]+$', '', title)
+                        title = re.sub(r'\s+', ' ', title)
+                        
+                        if len(title) < 3:
+                            continue
+                    except Exception as e:
+                        print(f"        [ERROR] Failed to parse match: {e} [LANG: {lang}]")
                         continue
                     category = headers[col_idx] if col_idx < len(headers) and headers[col_idx] != f"Category {col_idx+1}" else section_text
-                    game_system = "AD&D" if "AD&D" in section_text or "add" in section_url.lower() else (
-                        "3E" if "3e" in section_url.lower() else (
-                        "4E" if "4e" in section_url.lower() else (
-                        "5E" if "5e" in section_url.lower() else "D&D")))
+                    
+                    # Enhanced game system detection
+                    game_system = "D&D"  # default
                     edition = "N/A"
-                    key = (product_code, title, game_system, edition, "English")
+                    
+                    # Check URL and section text for system/edition info
+                    url_lower = section_url.lower()
+                    section_lower = section_text.lower()
+                    
+                    if "add" in url_lower or "ad&d" in section_lower:
+                        game_system = "AD&D"
+                        if "1e" in url_lower or "first" in section_lower:
+                            edition = "1E"
+                        elif "2e" in url_lower or "second" in section_lower:
+                            edition = "2E"
+                    elif "3e" in url_lower or "3.5" in url_lower:
+                        game_system = "D&D"
+                        edition = "3E" if "3e" in url_lower else "3.5E"
+                    elif "4e" in url_lower:
+                        game_system = "D&D"
+                        edition = "4E"
+                    elif "5e" in url_lower:
+                        game_system = "D&D"
+                        edition = "5E"
+                    elif "basic" in section_lower:
+                        game_system = "D&D"
+                        edition = "Basic"
+                    # Enhanced duplicate detection
+                    normalized_title = re.sub(r'[^a-zA-Z0-9\s]', '', title.lower()).strip()
+                    key = (product_code, normalized_title, game_system, edition, lang)
                     if key in seen_products:
                         print(f"        [DUPLICATE] {title} | Code: {product_code} | Cat: {category} [LANG: {lang}]")
                         continue
@@ -555,7 +678,7 @@ def parse_tsr_table_products(soup, section_text, lang, section_url, conn):
                         try:
                             conn.execute(
                                 "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                (product_code, title, game_system, edition, category, "English", section_url)
+                                (product_code, title, game_system, edition, category, lang, section_url)
                             )
                             print(f"        [INSERTED] {title} | Code: {product_code} | Cat: {category} [LANG: {lang}]")
                             total_added += 1
@@ -563,10 +686,34 @@ def parse_tsr_table_products(soup, section_text, lang, section_url, conn):
                         except Exception as e:
                             print(f"    [ERROR] DB insert failed for {title}: {e}", file=sys.stderr)
                     else:
-                        products.append((product_code, title, game_system, edition, category, "English", section_url))
+                        products.append((product_code, title, game_system, edition, category, lang, section_url))
                         seen_products.add(key)
     if table_count == 0:
-        print(f"      [DEBUG] No tables found in section page [LANG: {lang}]" )
+        print(f"      [DEBUG] No tables found in section page [LANG: {lang}]")
+        # Try to extract from plain text as fallback
+        text = soup.get_text()
+        text_patterns = [
+            r'(\d{4,5})\s+([A-Z][^\n]{10,100})',
+            r'([A-Z]{1,4}\d{1,5})\s+([A-Z][^\n]{10,100})',
+        ]
+        for pattern in text_patterns:
+            matches = re.finditer(pattern, text)
+            for match in matches:
+                code = match.group(1)
+                title = normalize_whitespace(match.group(2))
+                if len(title) > 5 and len(title) < 150:
+                    if conn:
+                        try:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                (code, title, "D&D", "N/A", section_text, lang, section_url)
+                            )
+                            total_added += 1
+                        except Exception:
+                            pass
+                    else:
+                        products.append((code, title, "D&D", "N/A", section_text, lang, section_url))
+    
     if conn:
         print(f"      [SUMMARY] Inserted: {total_added} unique products from tables in {section_url} [LANG: {lang}]\n")
         return total_added
@@ -586,34 +733,68 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
         return
     current_edition = "N/A"
     header_map = {
-        "title": {"title", "titolo", "titolo originale"},
-        "code": {"code", "codice", "codice prodotto"},
-        "edition": {"edition", "edizione"}
+        "title": {"title", "titolo", "titolo originale", "name", "nome"},
+        "code": {"code", "codice", "codice prodotto", "product code", "isbn"},
+        "edition": {"edition", "edizione", "version", "versione"}
     }
     total_added = 0
+    
+    # Enhanced table detection - include more table types
     tables = []
     for tag in content.find_all('table'):
         if isinstance(tag, Tag):
-            cls = tag.get('class')
-            if isinstance(cls, list) and 'wikitable' in cls:
+            cls = tag.get('class', [])
+            if isinstance(cls, str):
+                cls = [cls]
+            if any(c in cls for c in ['wikitable', 'sortable', 'navbox', 'infobox']):
                 tables.append(tag)
+    
+    # Also parse lists if no tables found
+    if not tables:
+        for ul in content.find_all(['ul', 'ol']):
+            if isinstance(ul, Tag):
+                tables.append(ul)
+    
     def parse_table(table):
         nonlocal current_edition
         products = []
         # Find preceding h2/h3 for edition
-        prev = table.find_previous(['h2', 'h3'])
+        prev = table.find_previous(['h2', 'h3', 'h4'])
         if prev:
             headline = prev.find(class_='mw-headline') if hasattr(prev, 'find') else None
             if headline:
-                current_edition = normalize_whitespace(headline.get_text())
-        for row in parse_table_rows(table, header_map):
-            title = row.get("title")
-            code = row.get("code")
-            edition_in_table = row.get("edition")
-            final_edition = edition_in_table or current_edition
-            if title and "List of" not in title and len(title) > 1:
-                products.append((code, title, system, final_edition, category, lang, url))
+                edition_text = normalize_whitespace(headline.get_text())
+                # Extract edition info from headers
+                edition_patterns = [r'(\d+(?:\.\d+)?e?)', r'(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)', r'(basic|expert|companion|master|immortal)']
+                for pattern in edition_patterns:
+                    match = re.search(pattern, edition_text, re.IGNORECASE)
+                    if match:
+                        current_edition = match.group(1)
+                        break
+        
+        if table.name in ['ul', 'ol']:
+            # Parse list items
+            for li in table.find_all('li'):
+                text = normalize_whitespace(li.get_text())
+                if len(text) > 3 and not any(skip in text.lower() for skip in ['list of', 'category:', 'see also']):
+                    # Try to extract code and title
+                    code_match = re.search(r'\b([A-Z]{1,4}\d{1,5}|\d{4,5})\b', text)
+                    code = code_match.group(1) if code_match else None
+                    title = re.sub(r'\b([A-Z]{1,4}\d{1,5}|\d{4,5})\b', '', text).strip()
+                    if not title:
+                        title = text
+                    products.append((code, title, system, current_edition, category, lang, url))
+        else:
+            # Parse table rows
+            for row in parse_table_rows(table, header_map):
+                title = row.get("title")
+                code = row.get("code")
+                edition_in_table = row.get("edition")
+                final_edition = edition_in_table or current_edition
+                if title and "List of" not in title and len(title) > 1:
+                    products.append((code, title, system, final_edition, category, lang, url))
         return products
+    
     all_products, errors = parallel_map_parse(parse_table, tables)
     for prod in all_products:
         try:
@@ -636,14 +817,45 @@ def parse_rpggeek(conn, url, lang):
         return
     cursor = conn.cursor()
     total_added = 0
-    rows = soup.select('table.geekitem_table tr')
+    
+    # Enhanced selectors for different RPGGeek layouts
+    selectors = [
+        'table.geekitem_table tr',
+        '.collection_table tr',
+        '.game_table tr',
+        'tr.collection_objectname',
+        '.objectname a'
+    ]
+    
+    rows = []
+    for selector in selectors:
+        found = soup.select(selector)
+        if found:
+            rows.extend(found)
+            break
+    
     def parse_row(row):
-        cols = row.find_all('td')
-        if len(cols) >= 2:
-            title = cols[1].get_text(strip=True)
-            if title:
+        if row.name == 'a':
+            title = normalize_whitespace(row.get_text())
+            if title and len(title) > 2:
                 return (None, title, "RPG", None, "Module/Adventure", lang, url)
+        else:
+            cols = row.find_all(['td', 'th'])
+            if len(cols) >= 2:
+                # Try different column positions for title
+                for i in range(min(3, len(cols))):
+                    title_elem = cols[i].find('a') or cols[i]
+                    title = normalize_whitespace(title_elem.get_text())
+                    if title and len(title) > 2 and not title.isdigit():
+                        # Extract system info if available
+                        system = "RPG"
+                        if any(sys in title.lower() for sys in ['d&d', 'dungeons', 'dragons']):
+                            system = "D&D"
+                        elif 'pathfinder' in title.lower():
+                            system = "Pathfinder"
+                        return (None, title, system, None, "Module/Adventure", lang, url)
         return None
+    
     products, errors = parallel_map_parse(parse_row, rows)
     for prod in products:
         if prod:
@@ -763,6 +975,49 @@ def parse_drivethrurpg(conn, url, system, lang):
     print("  [INFO] DriveThruRPG blocks automated scripts. Please use manual import, publisher data, or official APIs if available.")
     return
 
+# Enhanced generic parser for unknown sources
+def parse_generic_fallback(conn, url, lang):
+    """Fallback parser that attempts to extract RPG-related content from any page"""
+    print(f"\n[+] Parsing with generic fallback from {url} (language: {lang})...")
+    soup = safe_request(url)
+    if not soup:
+        return
+    
+    cursor = conn.cursor()
+    total_added = 0
+    
+    # Look for common RPG patterns in text
+    text = soup.get_text()
+    rpg_patterns = [
+        r'([A-Z]{1,4}\d{1,5})\s+([^\n]{10,100})',  # Product codes
+        r'ISBN[:\s]*(\d{10,13})\s+([^\n]{10,100})',  # ISBN codes
+        r'(\d{4,5})\s+([A-Z][^\n]{10,100})',  # Numeric codes
+    ]
+    
+    for pattern in rpg_patterns:
+        matches = re.finditer(pattern, text)
+        for match in matches:
+            code = match.group(1)
+            title = normalize_whitespace(match.group(2))
+            if len(title) > 10 and len(title) < 200:
+                system = "RPG"
+                if any(term in title.lower() for term in ['d&d', 'dungeons', 'dragons']):
+                    system = "D&D"
+                elif 'pathfinder' in title.lower():
+                    system = "Pathfinder"
+                
+                try:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO products (product_code, title, game_system, edition, category, language, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (code, title, system, None, "Module/Adventure", lang, url)
+                    )
+                    total_added += 1
+                except Exception as e:
+                    print(f"    [ERROR] DB insert failed: {e}", file=sys.stderr)
+    
+    conn.commit()
+    print(f"[SUCCESS] Generic fallback parsing complete. Added {total_added} entries.")
+
 # --- Main Execution Block ---
 PARSER_MAPPING = {
     "tsr_archive_en": (parse_tsr_archive, "English"),
@@ -781,55 +1036,132 @@ PARSER_MAPPING = {
     # Add more Italian/other-language sources and parsers as needed
 }
 
-if __name__ == "__main__":
+def main():
     print("--- Building Enhanced Knowledge Base from Online Sources ---")
     connection = None
+    
     try:
+        # Load configuration
         config = load_config()
         urls_to_scrape = config['knowledge_base_urls']
         url_languages = config.get('knowledge_base_url_languages', {})
+        
+        if not urls_to_scrape:
+            print("[WARNING] No URLs configured for scraping")
+            return 0
+        
+        # Initialize database
         connection = init_db()
+        
+        # Process URLs with resource management
+        processed_count = 0
+        failed_count = 0
+        
         for key, url in urls_to_scrape.items():
-            print(f"\n[INFO] Processing: {key}")
+            print(f"\n[INFO] Processing: {key} ({processed_count + 1}/{len(urls_to_scrape)})")
             lang = url_languages.get(key, "English")
-            if key in PARSER_MAPPING:
-                parser_func, _ = PARSER_MAPPING[key]
-                try:
+            
+            try:
+                if key in PARSER_MAPPING:
+                    parser_func, _ = PARSER_MAPPING[key]
                     parser_func(connection, url, lang)
-                    time.sleep(2)  # Throttle between sources
-                except Exception as e:
-                    print(f"  [CRITICAL] Parser '{key}' failed unexpectedly: {e}", file=sys.stderr)
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print(f"  [WARNING] No parser available for config key '{key}'. Skipping.", file=sys.stderr)
+                else:
+                    print(f"  [WARNING] No specific parser for '{key}'. Trying generic fallback...")
+                    parse_generic_fallback(connection, url, lang)
+                
+                processed_count += 1
+                
+                # Resource management between sources
+                gc.collect()
+                time.sleep(2)  # Throttle between sources
+                
+            except KeyboardInterrupt:
+                print("\n[INFO] Process interrupted by user")
+                break
+            except Exception as e:
+                print(f"  [ERROR] Failed to process '{key}': {e}", file=sys.stderr)
+                failed_count += 1
+                
+                # Try generic fallback if specific parser failed
+                if key in PARSER_MAPPING:
+                    print(f"  [INFO] Attempting generic fallback for '{key}'...")
+                    try:
+                        parse_generic_fallback(connection, url, lang)
+                        processed_count += 1
+                    except Exception as fallback_e:
+                        print(f"  [ERROR] Generic fallback also failed: {fallback_e}", file=sys.stderr)
+        
+        print(f"\n[SUMMARY] Processed: {processed_count}, Failed: {failed_count}")
+        
+        return 0
+        
     except Exception as e:
         print(f"[FATAL] Unhandled error: {e}", file=sys.stderr)
-        sys.exit(1)
+        import traceback
+        traceback.print_exc()
+        return 1
+        
     finally:
-        if connection:
-            try:
-                # --- Dynamic and Correct Statistics Report ---
-                print("\n--- Knowledge Base Statistics ---")
-                cursor = connection.cursor()
-                cursor.execute("SELECT COUNT(*) FROM products")
-                print(f"Total unique products: {cursor.fetchone()[0]}")
-                cursor.execute("SELECT DISTINCT game_system FROM products ORDER BY game_system")
-                game_systems = [row[0] for row in cursor.fetchall()]
-                for system in game_systems:
-                    print(f"\nBreakdown for: {system}")
-                    cursor.execute("SELECT COUNT(*) FROM products WHERE game_system = ?", (system,))
-                    print(f"  Total Entries: {cursor.fetchone()[0]}")
-                    print("  By Language:")
-                    cursor.execute("SELECT language, COUNT(*) FROM products WHERE game_system = ? GROUP BY language", (system,))
-                    for lang, count in cursor.fetchall():
-                        print(f"    {lang}: {count}")
-                    print("  By Edition:")
-                    cursor.execute("SELECT edition, COUNT(*) FROM products WHERE game_system = ? GROUP BY edition ORDER BY edition", (system,))
-                    for edition, count in cursor.fetchall():
-                        print(f"    {edition or 'N/A'}: {count}")
+        # Cleanup and statistics
+        try:
+            if connection:
+                print_statistics(connection)
                 connection.close()
-                print("\n--- Knowledge Base Build Complete! ---")
-                print(f"Enhanced database saved to '{DB_FILE}'")
-            except Exception:
-                pass
+            
+            # Close global session
+            global _session
+            if _session:
+                _session.close()
+                _session = None
+                
+        except Exception as cleanup_error:
+            print(f"[WARNING] Error during cleanup: {cleanup_error}", file=sys.stderr)
+
+def print_statistics(connection):
+    """Print database statistics"""
+    try:
+        print("\n--- Knowledge Base Statistics ---")
+        cursor = connection.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM products")
+        total_count = cursor.fetchone()[0]
+        print(f"Total unique products: {total_count}")
+        
+        if total_count == 0:
+            print("No products found in database.")
+            return
+        
+        cursor.execute("SELECT DISTINCT game_system FROM products ORDER BY game_system")
+        game_systems = [row[0] for row in cursor.fetchall()]
+        
+        for system in game_systems[:10]:  # Limit to first 10 systems
+            print(f"\nBreakdown for: {system}")
+            
+            cursor.execute("SELECT COUNT(*) FROM products WHERE game_system = ?", (system,))
+            system_count = cursor.fetchone()[0]
+            print(f"  Total Entries: {system_count}")
+            
+            # Language breakdown
+            cursor.execute("SELECT language, COUNT(*) FROM products WHERE game_system = ? GROUP BY language LIMIT 5", (system,))
+            lang_results = cursor.fetchall()
+            if lang_results:
+                print("  By Language:")
+                for lang, count in lang_results:
+                    print(f"    {lang or 'N/A'}: {count}")
+            
+            # Edition breakdown
+            cursor.execute("SELECT edition, COUNT(*) FROM products WHERE game_system = ? GROUP BY edition ORDER BY COUNT(*) DESC LIMIT 5", (system,))
+            edition_results = cursor.fetchall()
+            if edition_results:
+                print("  By Edition:")
+                for edition, count in edition_results:
+                    print(f"    {edition or 'N/A'}: {count}")
+        
+        print(f"\n--- Knowledge Base Build Complete! ---")
+        print(f"Enhanced database saved to '{DB_FILE}'")
+        
+    except Exception as e:
+        print(f"[ERROR] Could not generate statistics: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    sys.exit(main())

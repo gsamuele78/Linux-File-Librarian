@@ -6,16 +6,17 @@ import sys
 class ResourceManager:
     """
     Dynamically detects available system resources and provides safe worker/thread counts.
-    Use this to avoid OOM and adapt to the running system.
+    Enhanced with memory monitoring and automatic resource management.
     """
     def __init__(self, min_free_mb=400, min_workers=1, max_workers=4, ram_per_worker_mb=600, os_reserved_mb=2048, max_ram_usage_ratio=0.5):
-        # Always reserve at least 2GB for the OS by default
-        self.os_reserved_mb = os_reserved_mb
-        self.max_ram_usage_ratio = max_ram_usage_ratio
-        self.min_free_mb = max(min_free_mb, self.os_reserved_mb)
-        self.min_workers = min_workers
-        self.max_workers = max_workers
-        self.ram_per_worker_mb = ram_per_worker_mb
+        self.os_reserved_mb = max(os_reserved_mb, 512)  # Minimum 512MB for OS
+        self.max_ram_usage_ratio = min(max_ram_usage_ratio, 0.8)  # Cap at 80%
+        self.min_free_mb = max(min_free_mb, 256)
+        self.min_workers = max(min_workers, 1)
+        self.max_workers = min(max_workers, os.cpu_count() or 4)
+        self.ram_per_worker_mb = max(ram_per_worker_mb, 256)
+        self._last_check_time = 0
+        self._cached_worker_count = None
 
     def get_available_ram_mb(self):
         # Use only available memory for worker calculation
@@ -55,59 +56,151 @@ class ResourceManager:
         return psutil.virtual_memory().total / (1024*1024)
 
     def get_safe_worker_count(self):
-        avail_mb = self.get_available_ram_mb()
-        total_mb = self.get_total_ram_mb()
-        # If system RAM is low, allow os_reserved_mb to be as low as 512MB
-        min_os_reserved = 512
-        os_reserved_mb = max(self.os_reserved_mb, min_os_reserved)
-        usable_mb = max(0, avail_mb - os_reserved_mb)
-        max_worker_ram = int(total_mb * self.max_ram_usage_ratio)
-        if usable_mb > max_worker_ram:
-            usable_mb = max_worker_ram
-            print(f"[RESOURCE] Capping worker RAM usage to {self.max_ram_usage_ratio*100:.0f}% of total RAM ({max_worker_ram}MB)")
-        # Always allow at least 1 worker, even if usable_mb is very low
-        min_ram_per_worker = 600
-        workers = min(self.max_workers, int(usable_mb // self.ram_per_worker_mb)) if usable_mb > 0 else 1
-        # Dynamically reduce workers until each gets at least min_ram_per_worker
-        while workers > self.min_workers:
-            if workers == 0:
+        import time
+        
+        # Cache worker count for 30 seconds to avoid excessive calculations
+        current_time = time.time()
+        if (self._cached_worker_count is not None and 
+            current_time - self._last_check_time < 30):
+            return self._cached_worker_count
+        
+        try:
+            avail_mb = self.get_available_ram_mb()
+            total_mb = self.get_total_ram_mb()
+            
+            # Dynamic OS reservation based on total RAM
+            if total_mb < 4096:  # Less than 4GB
+                os_reserved_mb = 512
+            elif total_mb < 8192:  # Less than 8GB
+                os_reserved_mb = 1024
+            else:
+                os_reserved_mb = self.os_reserved_mb
+            
+            usable_mb = max(0, avail_mb - os_reserved_mb)
+            max_worker_ram = int(total_mb * self.max_ram_usage_ratio)
+            
+            if usable_mb > max_worker_ram:
+                usable_mb = max_worker_ram
+                print(f"[RESOURCE] Capping worker RAM usage to {self.max_ram_usage_ratio*100:.0f}% of total RAM ({max_worker_ram}MB)")
+            
+            # Calculate workers based on available memory
+            if usable_mb <= 0:
                 workers = 1
-                break
-            ram_per_worker = usable_mb / workers if workers else 1
-            if ram_per_worker >= min_ram_per_worker:
-                break
-            print(f"[RESOURCE] Reducing workers to {workers-1} to ensure at least {min_ram_per_worker}MB RAM per worker (current: {ram_per_worker:.1f}MB)")
-            workers -= 1
-        if workers < self.min_workers:
-            workers = self.min_workers
-        # Never show 0MB per worker, set a floor of 1MB for display
-        ram_per_worker_display = max(usable_mb / workers if workers else 1, 1)
-        if usable_mb <= 0:
-            print(f"[RESOURCE][WARNING] Usable RAM for workers is zero or negative after reserving {os_reserved_mb}MB for OS. Forcing 1 worker with minimal RAM. System may be under memory pressure. Consider freeing up RAM or lowering os_reserved_mb in config.")
-        print(f"[RESOURCE] Final worker count: {workers} (RAM per worker: {ram_per_worker_display:.1f}MB, OS reserved: {os_reserved_mb}MB, max usage: {self.max_ram_usage_ratio*100:.0f}%)")
-        return workers
+                print(f"[RESOURCE][WARNING] Low memory condition. Using single worker.")
+            else:
+                # Base calculation
+                workers = min(self.max_workers, max(1, int(usable_mb // self.ram_per_worker_mb)))
+                
+                # Ensure minimum RAM per worker
+                min_ram_per_worker = max(256, self.ram_per_worker_mb // 2)
+                while workers > self.min_workers and (usable_mb / workers) < min_ram_per_worker:
+                    workers -= 1
+                
+                workers = max(self.min_workers, workers)
+            
+            # Memory pressure detection
+            memory_pressure = self._detect_memory_pressure()
+            if memory_pressure and workers > 1:
+                workers = max(1, workers // 2)
+                print(f"[RESOURCE] Memory pressure detected, reducing workers to {workers}")
+            
+            ram_per_worker = usable_mb / workers if workers > 0 else 0
+            print(f"[RESOURCE] Workers: {workers}, RAM per worker: {ram_per_worker:.1f}MB, OS reserved: {os_reserved_mb}MB")
+            
+            # Cache the result
+            self._cached_worker_count = workers
+            self._last_check_time = current_time
+            
+            return workers
+            
+        except Exception as e:
+            print(f"[RESOURCE][ERROR] Error calculating worker count: {e}")
+            return 1
+    
+    def _detect_memory_pressure(self):
+        """Detect if system is under memory pressure"""
+        try:
+            vm = psutil.virtual_memory()
+            # Memory pressure if less than 10% available or swap usage > 50%
+            if vm.percent > 90:
+                return True
+            
+            swap = psutil.swap_memory()
+            if swap.total > 0 and swap.percent > 50:
+                return True
+                
+            return False
+        except Exception:
+            return False
 
     def wait_for_free_ram(self, min_free_mb=None, check_interval=5, max_wait=300):
-        # Always reserve at least 1GB for the OS
         if min_free_mb is None:
             min_free_mb = self.min_free_mb
-        min_free_mb = max(min_free_mb, self.os_reserved_mb)
+        
+        # Adaptive minimum based on system total RAM
+        total_mb = self.get_total_ram_mb()
+        if total_mb < 4096:  # Less than 4GB system
+            min_free_mb = min(min_free_mb, 256)
+        
         waited = 0
-        while True:
+        while waited < max_wait:
             free_mb = self.get_available_ram_mb()
+            
+            # Check for memory pressure
+            if self._detect_memory_pressure():
+                print(f"[RESOURCE] Memory pressure detected, forcing cleanup...")
+                self.force_cleanup()
+                time.sleep(2)  # Give system time to cleanup
+            
             if free_mb >= min_free_mb:
                 print(f"[RESOURCE] Sufficient free RAM: {free_mb:.1f}MB >= {min_free_mb}MB")
                 break
+                
             print(f"[RESOURCE] Waiting for free RAM: {free_mb:.1f}MB < {min_free_mb}MB (waited {waited}s)")
             time.sleep(check_interval)
             waited += check_interval
-            if waited >= max_wait:
-                print(f"[WARNING] Still low on RAM after {max_wait}s, proceeding anyway.", file=sys.stderr)
-                break
+        
+        if waited >= max_wait:
+            print(f"[WARNING] Proceeding with limited RAM after {max_wait}s wait.", file=sys.stderr)
 
     def print_resource_usage(self, phase):
-        process = psutil.Process(os.getpid())
-        mem = process.memory_info().rss / (1024*1024)
-        open_files = len(process.open_files()) if hasattr(process, 'open_files') else 'N/A'
-        children = len(process.children(recursive=True))
-        print(f"[RESOURCE] {phase}: RAM={mem:.1f}MB, OpenFiles={open_files}, Children={children}")
+        try:
+            process = psutil.Process(os.getpid())
+            mem_info = process.memory_info()
+            mem_mb = mem_info.rss / (1024*1024)
+            
+            # Get system memory info
+            vm = psutil.virtual_memory()
+            system_used_percent = vm.percent
+            
+            # Get file handles safely
+            try:
+                open_files = len(process.open_files())
+            except (psutil.AccessDenied, AttributeError):
+                open_files = 'N/A'
+            
+            # Get child processes
+            try:
+                children = len(process.children(recursive=True))
+            except psutil.AccessDenied:
+                children = 'N/A'
+            
+            print(f"[RESOURCE] {phase}: Process RAM={mem_mb:.1f}MB, System RAM={system_used_percent:.1f}%, Files={open_files}, Children={children}")
+            
+            # Warning if memory usage is high
+            if mem_mb > 1024:  # More than 1GB
+                print(f"[RESOURCE][WARNING] High memory usage detected: {mem_mb:.1f}MB")
+                
+        except Exception as e:
+            print(f"[RESOURCE][ERROR] Could not get resource usage: {e}")
+    
+    def force_cleanup(self):
+        """Force garbage collection and memory cleanup"""
+        import gc
+        gc.collect()
+        
+        # Clear cached values
+        self._cached_worker_count = None
+        self._last_check_time = 0
+        
+        print("[RESOURCE] Forced cleanup completed")

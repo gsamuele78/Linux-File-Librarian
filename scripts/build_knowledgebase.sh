@@ -23,7 +23,7 @@ source "${PROJECT_ROOT}/venv/bin/activate"
 
 echo "[INFO] Running the knowledge base builder..."
 cd "${PROJECT_ROOT}"
-PYTHONPATH="${PROJECT_ROOT}" exec python3 src/build_knowledgebase.py
+if ! PYTHONPATH="${PROJECT_ROOT}" python3 src/build_knowledgebase.py; then
   echo "[ERROR] build_knowledgebase.py failed!"
   exit 1
-}
+fi
