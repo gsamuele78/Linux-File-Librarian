@@ -8,13 +8,13 @@ class ResourceManager:
     Dynamically detects available system resources and provides safe worker/thread counts.
     Enhanced with memory monitoring and automatic resource management.
     """
-    def __init__(self, min_free_mb=400, min_workers=1, max_workers=4, ram_per_worker_mb=600, os_reserved_mb=2048, max_ram_usage_ratio=0.5):
-        self.os_reserved_mb = max(os_reserved_mb, 512)  # Minimum 512MB for OS
-        self.max_ram_usage_ratio = min(max_ram_usage_ratio, 0.8)  # Cap at 80%
-        self.min_free_mb = max(min_free_mb, 256)
+    def __init__(self, min_free_mb=512, min_workers=1, max_workers=2, ram_per_worker_mb=400, os_reserved_mb=512, max_ram_usage_ratio=0.3):
+        self.os_reserved_mb = max(os_reserved_mb, 512)  # Always reserve 512MB for OS
+        self.max_ram_usage_ratio = min(max_ram_usage_ratio, 0.4)  # Cap at 40% to be conservative
+        self.min_free_mb = max(min_free_mb, 512)  # Always keep 512MB free
         self.min_workers = max(min_workers, 1)
-        self.max_workers = min(max_workers, os.cpu_count() or 4)
-        self.ram_per_worker_mb = max(ram_per_worker_mb, 256)
+        self.max_workers = min(max_workers, 2)  # Limit to 2 workers max
+        self.ram_per_worker_mb = max(ram_per_worker_mb, 300)  # Minimum 300MB per worker
         self._last_check_time = 0
         self._cached_worker_count = None
 
@@ -68,41 +68,46 @@ class ResourceManager:
             avail_mb = self.get_available_ram_mb()
             total_mb = self.get_total_ram_mb()
             
-            # Dynamic OS reservation based on total RAM
-            if total_mb < 4096:  # Less than 4GB
-                os_reserved_mb = 512
-            elif total_mb < 8192:  # Less than 8GB
-                os_reserved_mb = 1024
-            else:
-                os_reserved_mb = self.os_reserved_mb
+            # Always reserve 512MB for OS regardless of total RAM
+            os_reserved_mb = 512
             
-            usable_mb = max(0, avail_mb - os_reserved_mb)
-            max_worker_ram = int(total_mb * self.max_ram_usage_ratio)
+            # Calculate usable memory very conservatively
+            usable_mb = max(0, avail_mb - os_reserved_mb - self.min_free_mb)
+            
+            # Cap at 30% of total RAM to be very conservative
+            max_worker_ram = int(total_mb * 0.3)
             
             if usable_mb > max_worker_ram:
                 usable_mb = max_worker_ram
-                print(f"[RESOURCE] Capping worker RAM usage to {self.max_ram_usage_ratio*100:.0f}% of total RAM ({max_worker_ram}MB)")
+                print(f"[RESOURCE] Capping worker RAM usage to 30% of total RAM ({max_worker_ram}MB)")
             
-            # Calculate workers based on available memory
-            if usable_mb <= 0:
+            # Very conservative worker calculation
+            if usable_mb < 400:  # Less than 400MB usable
                 workers = 1
-                print(f"[RESOURCE][WARNING] Low memory condition. Using single worker.")
+                print(f"[RESOURCE][WARNING] Very low memory ({usable_mb}MB usable). Using single worker.")
+            elif usable_mb < 800:  # Less than 800MB usable
+                workers = 1
+                print(f"[RESOURCE] Low memory ({usable_mb}MB usable). Using single worker.")
             else:
-                # Base calculation
-                workers = min(self.max_workers, max(1, int(usable_mb // self.ram_per_worker_mb)))
+                # Calculate workers with strict memory per worker (400MB minimum)
+                workers = min(self.max_workers, max(1, int(usable_mb // 400)))
                 
-                # Ensure minimum RAM per worker
-                min_ram_per_worker = max(256, self.ram_per_worker_mb // 2)
-                while workers > self.min_workers and (usable_mb / workers) < min_ram_per_worker:
+                # Ensure each worker has at least 400MB
+                while workers > 1 and (usable_mb / workers) < 400:
                     workers -= 1
                 
-                workers = max(self.min_workers, workers)
+                workers = max(1, workers)
             
-            # Memory pressure detection
+            # Always check memory pressure and be very conservative
             memory_pressure = self._detect_memory_pressure()
-            if memory_pressure and workers > 1:
-                workers = max(1, workers // 2)
-                print(f"[RESOURCE] Memory pressure detected, reducing workers to {workers}")
+            if memory_pressure or avail_mb < 1000:  # If memory pressure OR less than 1GB available
+                workers = 1
+                print(f"[RESOURCE] Memory pressure or low RAM detected, forcing single worker")
+            
+            # Final safety check - never use more than 1 worker if available RAM < 2GB
+            if avail_mb < 2000:
+                workers = 1
+                print(f"[RESOURCE] Available RAM < 2GB ({avail_mb}MB), forcing single worker")
             
             ram_per_worker = usable_mb / workers if workers > 0 else 0
             print(f"[RESOURCE] Workers: {workers}, RAM per worker: {ram_per_worker:.1f}MB, OS reserved: {os_reserved_mb}MB")
@@ -118,20 +123,25 @@ class ResourceManager:
             return 1
     
     def _detect_memory_pressure(self):
-        """Detect if system is under memory pressure"""
+        """Detect if system is under memory pressure - very sensitive"""
         try:
             vm = psutil.virtual_memory()
-            # Memory pressure if less than 10% available or swap usage > 50%
-            if vm.percent > 90:
+            # Memory pressure if less than 20% available (was 10%)
+            if vm.percent > 80:
+                return True
+            
+            # Check if available memory is less than 1GB
+            if vm.available < 1024 * 1024 * 1024:
                 return True
             
             swap = psutil.swap_memory()
-            if swap.total > 0 and swap.percent > 50:
+            # Memory pressure if any significant swap usage (was 50%)
+            if swap.total > 0 and swap.percent > 20:
                 return True
                 
             return False
         except Exception:
-            return False
+            return True  # Assume pressure if we can't check
 
     def wait_for_free_ram(self, min_free_mb=None, check_interval=5, max_wait=300):
         if min_free_mb is None:

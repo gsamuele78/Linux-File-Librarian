@@ -19,8 +19,11 @@ fi
 # shellcheck source=/dev/null
 source "$PROJECT_ROOT/venv/bin/activate"
 
-echo "[INFO] Running the librarian script..."
+echo "[INFO] Setting up memory constraints..."
 cd "$PROJECT_ROOT"
+python3 src/utility/setup_memory_constraints.py
+
+echo "[INFO] Running the librarian script with memory optimization..."
 PYTHONPATH="$PROJECT_ROOT" python3 src/librarian.py | tee librarian_run.log || {
   echo "[ERROR] librarian.py failed! See librarian_run.log for details."
   exit 1

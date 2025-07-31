@@ -21,12 +21,12 @@ fi
 echo ""
 echo "Step 1: Running cleanup script..."
 echo "--------------------------------"
-python3 scripts/cleanup_broken_files.py
+python3 src/utility/cleanup_broken_files.py
 
 echo ""
 echo "Step 2: Running memory optimization..."
 echo "------------------------------------"
-python3 scripts/optimize_memory.py
+python3 src/utility/optimize_memory.py
 
 echo ""
 echo "Step 3: Clearing temporary files..."

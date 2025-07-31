@@ -4,7 +4,7 @@ import mimetypes
 import traceback
 import pandas as pd
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from functools import partial
 from tqdm import tqdm
 
@@ -351,13 +351,13 @@ class LibraryBuilder:
             self.pdf_validation = {}
             return self.pdf_validation
 
-        # Adaptive chunk size based on available memory
+        # Ultra conservative chunk size to prevent memory errors
         available_mb = self.resource_mgr.get_available_ram_mb()
-        chunk_size = max(5, min(25, available_mb // 100))  # Scale with memory
+        chunk_size = max(1, min(3, available_mb // 1000))  # Ultra small batches
         temp_csv = 'file_scan_batches.csv'
         pdf_validation = {}
         
-        print(f"[RESOURCE] Using chunk size: {chunk_size} based on available RAM: {available_mb}MB")
+        print(f"[RESOURCE] Using conservative chunk size: {chunk_size} based on available RAM: {available_mb}MB")
 
         # Function to check system resources and adjust workers
         def get_adjusted_worker_count():
@@ -384,7 +384,8 @@ class LibraryBuilder:
         try:
             for chunk_idx, chunk in enumerate(pd.read_csv(temp_csv, chunksize=chunk_size, engine='python')):
                 enforce_memory_limits()
-                max_workers = get_adjusted_worker_count()
+                # Always use sequential processing for PDFs to prevent memory issues
+                max_workers = 1
                 
                 try:
                     if not isinstance(chunk, pd.DataFrame):
@@ -404,47 +405,37 @@ class LibraryBuilder:
                     print(f"[RESOURCE] Using {max_workers} workers for this batch")
                     
                     batch_results = {}
-                    # Use context manager for proper resource cleanup
-                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                        # Process files in smaller sub-batches for better memory management
-                        sub_batch_size = max(1, min(10, len(pdf_paths) // max_workers)) if max_workers > 1 else len(pdf_paths)
-                        
-                        for i in range(0, len(pdf_paths), sub_batch_size):
-                            sub_batch = pdf_paths[i:i + sub_batch_size]
-                            futures = {}
+                    # Always use sequential processing to prevent memory allocation errors
+                    print(f"[LOG] Processing {len(pdf_paths)} PDF files sequentially to prevent memory issues...")
+                    
+                    for i, path in enumerate(tqdm(pdf_paths, desc=f"PDF Batch {chunk_idx+1}")):
+                        try:
+                            # Process each PDF individually without multiprocessing
+                            from src.pdf_manager import PDFManager
+                            def dummy_log_error(*args, **kwargs):
+                                pass
                             
-                            try:
-                                # Submit jobs with resource monitoring
-                                for path in sub_batch:
-                                    future = executor.submit(get_pdf_details_standalone, path)
-                                    futures[future] = path
-                                
-                                print(f"[LOG] Processing sub-batch {i//sub_batch_size + 1} of {len(sub_batch)} PDF files...")
-                                
-                                # Process results with timeout and error handling
-                                for future in tqdm(as_completed(futures, timeout=300), 
-                                                total=len(futures), 
-                                                desc=f"PDF Sub-batch {i//sub_batch_size + 1}"):
-                                    try:
-                                        result = future.result(timeout=60)
-                                        batch_results[futures[future]] = result
-                                    except TimeoutError:
-                                        print(f"[ERROR] Timeout processing PDF: {futures[future]}")
-                                        self.logger.log_error('PDF_TIMEOUT', futures[future], 'PDF processing timeout')
-                                    except MemoryError:
-                                        print(f"[ERROR] Memory error processing PDF: {futures[future]}")
-                                        self.logger.log_error('PDF_MEMORY_ERROR', futures[future], 'PDF processing memory error')
-                                        enforce_memory_limits()
-                                    except Exception as e:
-                                        print(f"[ERROR] PDF validation failed: {e}")
-                                        self.logger.log_error('PDF_VALIDATION_ERROR', futures.get(future, 'unknown'), str(e))
-                                
-                            finally:
-                                # Cancel any remaining futures
-                                for future in futures:
-                                    if not future.done():
-                                        future.cancel()
+                            pdf_manager = PDFManager(log_error=dummy_log_error)
+                            result = pdf_manager.get_pdf_details(path)
+                            batch_results[path] = result
+                            
+                            # Cleanup after each file
+                            del pdf_manager
+                            gc.collect()
+                            
+                            # Check memory pressure every 10 files
+                            if (i + 1) % 10 == 0:
                                 enforce_memory_limits()
+                                
+                        except MemoryError:
+                            print(f"[ERROR] Memory error processing PDF: {path}")
+                            self.logger.log_error('PDF_MEMORY_ERROR', path, 'PDF processing memory error')
+                            enforce_memory_limits()
+                            continue
+                        except Exception as e:
+                            print(f"[ERROR] PDF validation failed for {path}: {e}")
+                            self.logger.log_error('PDF_VALIDATION_ERROR', path, str(e))
+                            continue
                         
                     pdf_validation.update(batch_results)
                     print(f"[LOG] Batch {chunk_idx+1} completed. Total files processed: {len(pdf_validation)}")
@@ -455,9 +446,9 @@ class LibraryBuilder:
                     continue
                 except MemoryError as me:
                     print(f"[ERROR] MemoryError in PDF chunk {chunk_idx+1}: {me}")
+                    print(f"[ERROR] Stopping PDF processing due to memory constraints")
                     enforce_memory_limits()
-                    time.sleep(2)  # Additional delay to let system recover
-                    continue
+                    break  # Stop processing instead of continuing
                 except Exception as e:
                     print(f"[ERROR] Exception in PDF chunk {chunk_idx+1}: {e}")
                     enforce_memory_limits()
@@ -470,6 +461,7 @@ class LibraryBuilder:
                 
         except Exception as e:
             print(f"[ERROR] Exception during PDF validation/repair: {e}")
+            print(f"[INFO] Continuing with limited PDF validation results...")
             with open('librarian_run.log', 'a') as logf:
                 logf.write(f"[ERROR] Exception during PDF validation/repair: {e}\n{traceback.format_exc()}\n")
         
@@ -494,10 +486,11 @@ class LibraryBuilder:
         knowledge_db_path = self.config.get('knowledge_base_db_url') or "knowledge.sqlite"
         analysis_results = []
         
-        # Adaptive chunk size based on available memory
+        # Very conservative chunk size for classification
         available_mb = self.resource_mgr.get_available_ram_mb()
-        chunk_size = max(10, min(50, available_mb // 50))
-        print(f"[RESOURCE] Using chunk size: {chunk_size} for classification")
+        chunk_size = max(3, min(10, available_mb // 200))  # Much smaller chunks
+        print(f"[RESOURCE] Using conservative chunk size: {chunk_size} for classification")
+        print(f"[INFO] PDF validation results: {len(self.pdf_validation)} files processed")
         
         # Create picklable partial function
         analyze_row_partial = partial(
@@ -515,63 +508,28 @@ class LibraryBuilder:
                 row_dicts = chunk.to_dict('records')
                 print(f"[INFO] Processing classification chunk {chunk_idx+1} with {len(row_dicts)} files...")
                 try:
-                    # Reduce worker count to prevent memory issues
-                    max_workers = max(1, min(1, self.resource_mgr.get_safe_worker_count() // 2))
-                    
-                    # Process files sequentially if memory is low
+                    # Always use single worker and sequential processing for memory safety
                     available_mb = self.resource_mgr.get_available_ram_mb()
-                    if available_mb < 2000:  # Less than 2GB available
-                        print(f"[WARNING] Low memory ({available_mb}MB), processing sequentially")
-                        for row in tqdm(row_dicts, desc=f"Classification Chunk {chunk_idx+1}"):
-                            try:
-                                result = analyze_row_partial(row)
-                                if result:
-                                    analysis_results.append(result)
-                            except Exception as e:
-                                row_info = row.get('path', 'unknown') if isinstance(row, dict) else 'unknown'
-                                print(f"[ERROR] Analysis failed for {row_info}: {e}")
-                                self.logger.log_error('ANALYSIS_ERROR', str(row_info), str(e)[:100])
+                    print(f"[INFO] Processing {len(row_dicts)} files sequentially (Available RAM: {available_mb}MB)")
+                    
+                    # Always process sequentially to prevent memory issues
+                    for row in tqdm(row_dicts, desc=f"Classification Chunk {chunk_idx+1}"):
+                        try:
+                            result = analyze_row_partial(row)
+                            if result:
+                                analysis_results.append(result)
+                        except Exception as e:
+                            row_info = row.get('path', 'unknown') if isinstance(row, dict) else 'unknown'
+                            print(f"[ERROR] Analysis failed for {row_info}: {e}")
+                            self.logger.log_error('ANALYSIS_ERROR', str(row_info), str(e)[:100])
+                        
+                        # Force garbage collection after each file and check memory pressure
+                        gc.collect()
+                        if self.resource_mgr._detect_memory_pressure():
+                            print("[RESOURCE] Memory pressure detected, pausing...")
+                            import time
+                            time.sleep(1)
                             gc.collect()
-                    else:
-                        # Use multiprocessing with reduced batch size
-                        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                            # Submit jobs in smaller batches to avoid memory buildup
-                            batch_size = min(len(row_dicts), max(1, max_workers))
-                            for i in range(0, len(row_dicts), batch_size):
-                                batch = row_dicts[i:i + batch_size]
-                                batch_futures = {executor.submit(analyze_row_partial, row): row for row in batch}
-                                
-                                # Process completed futures immediately
-                                for future in tqdm(as_completed(batch_futures, timeout=300), 
-                                                total=len(batch_futures), 
-                                                desc=f"Classification Batch {chunk_idx+1}-{i//batch_size+1}"):
-                                    try:
-                                        result = future.result(timeout=60)
-                                        if result:
-                                            analysis_results.append(result)
-                                    except TimeoutError:
-                                        row_data = batch_futures.get(future, {})
-                                        row_info = row_data.get('path', 'unknown') if isinstance(row_data, dict) else 'unknown'
-                                        print(f"[TIMEOUT] Analysis timeout for {row_info}")
-                                        self.logger.log_error('ANALYSIS_TIMEOUT', str(row_info), 'Processing timeout')
-                                    except MemoryError:
-                                        row_data = batch_futures.get(future, {})
-                                        row_info = row_data.get('path', 'unknown') if isinstance(row_data, dict) else 'unknown'
-                                        print(f"[MEMORY_ERROR] Analysis memory error for {row_info}")
-                                        self.logger.log_error('ANALYSIS_MEMORY_ERROR', str(row_info), 'Memory error')
-                                        gc.collect()
-                                    except Exception as e:
-                                        row_data = batch_futures.get(future, {})
-                                        row_info = row_data.get('path', 'unknown') if isinstance(row_data, dict) else 'unknown'
-                                        print(f"[ERROR] Analysis failed for {row_info}: {e}")
-                                        self.logger.log_error('ANALYSIS_ERROR', str(row_info), str(e)[:100])
-                                
-                                # Clean up completed futures
-                                for future in list(batch_futures.keys()):
-                                    if not future.done():
-                                        future.cancel()
-                                
-                                gc.collect()
                     
                     print("[LOG] Classification worker batch completed.")
                     
@@ -818,25 +776,70 @@ class LibraryBuilder:
         
         if unique_files is None or unique_files.empty:
             print("[ERROR] No unique files to copy or index. Skipping DB creation.")
+            print("[INFO] This may be due to memory errors during processing.")
+            print("[INFO] Try running with smaller source directories or more RAM.")
             return
         
-        LIBRARY_ROOT = self.config['library_root']
+        # Validate and test library_root from config
+        LIBRARY_ROOT = self.config.get('library_root')
+        if not LIBRARY_ROOT:
+            print("[ERROR] library_root not configured in config.ini")
+            return
+        
+        print(f"[INFO] Using library_root: {LIBRARY_ROOT}")
+        
+        # Test destination path accessibility
+        print("[INFO] Testing destination path...")
+        try:
+            # Check if parent directory exists and is accessible
+            parent_dir = os.path.dirname(LIBRARY_ROOT)
+            if not os.path.exists(parent_dir):
+                print(f"[ERROR] Parent directory does not exist: {parent_dir}")
+                return
+            
+            if not os.access(parent_dir, os.R_OK | os.W_OK):
+                print(f"[ERROR] Parent directory is not readable/writable: {parent_dir}")
+                return
+            
+            # Create library root if it doesn't exist
+            os.makedirs(LIBRARY_ROOT, exist_ok=True)
+            print(f"[INFO] Library root created/verified: {LIBRARY_ROOT}")
+            
+            # Test write permissions with a test file
+            test_file = os.path.join(LIBRARY_ROOT, '.write_test')
+            try:
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                print("[INFO] Write permissions verified")
+            except Exception as e:
+                print(f"[ERROR] Cannot write to destination: {e}")
+                return
+            
+            # Check available space
+            import shutil as sh
+            total, used, free = sh.disk_usage(LIBRARY_ROOT)
+            free_gb = free / (1024**3)
+            print(f"[INFO] Available space: {free_gb:.1f} GB")
+            
+            if free_gb < 1:
+                print("[WARNING] Less than 1GB free space available")
+            
+        except Exception as e:
+            print(f"[ERROR] Could not access/create library root {LIBRARY_ROOT}: {e}")
+            return
+        
         DB_FILE = "library_index.sqlite"
         db_path = os.path.join(LIBRARY_ROOT, DB_FILE)
-        
-        # Ensure library root exists
-        try:
-            os.makedirs(LIBRARY_ROOT, exist_ok=True)
-        except Exception as e:
-            print(f"[Error] Could not create library root: {e}")
-            return
+        print(f"[INFO] Database will be created at: {db_path}")
         
         # Remove old database
         if os.path.exists(db_path):
             try:
                 os.remove(db_path)
+                print(f"[INFO] Removed existing database: {db_path}")
             except Exception as e:
-                print(f"[Error] Could not remove old DB: {e}")
+                print(f"[ERROR] Could not remove old DB: {e}")
                 return
         
         copied_count = 0

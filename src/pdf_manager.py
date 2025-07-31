@@ -4,10 +4,51 @@ import subprocess
 import fitz
 import warnings
 import sys
+import contextlib
+import io
+import signal
+import gc
 
 class PDFManager:
     def __init__(self, log_error):
         self.log_error = log_error
+    
+    @contextlib.contextmanager
+    def suppress_mupdf_errors(self):
+        """Suppress non-critical MuPDF stderr output"""
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            yield
+        finally:
+            captured = sys.stderr.getvalue()
+            sys.stderr = old_stderr
+            # Only show critical errors, suppress common format issues
+            if captured and not any(x in captured.lower() for x in [
+                'cmsopenprofilefrommem failed',
+                'non-page object in page tree', 
+                'too many kids in page tree',
+                'expected object number',
+                'zlib error: (null)',
+                'malloc (',
+                'bytes) failed'
+            ]):
+                print(captured, file=sys.stderr, end='')
+    
+    @contextlib.contextmanager
+    def timeout_handler(self, timeout_seconds=30):
+        """Handle timeouts for PDF operations"""
+        def timeout_signal(signum, frame):
+            raise TimeoutError(f"PDF operation timed out after {timeout_seconds} seconds")
+        
+        old_handler = signal.signal(signal.SIGALRM, timeout_signal)
+        signal.alarm(timeout_seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            gc.collect()  # Force cleanup after timeout
 
     def qpdf_check_pdf(self, file_path):
         try:
@@ -32,6 +73,8 @@ class PDFManager:
         qpdf_check_output = None
         warnings.filterwarnings("ignore", category=UserWarning)
         mupdf_error_seen = set()
+        
+
         if os.path.basename(file_path).startswith("._"):
             msg = f"Skipping AppleDouble resource fork: {file_path}"
             print(f"  [Info] {msg}", file=sys.stderr)
@@ -55,29 +98,50 @@ class PDFManager:
             self.log_error("HEADER_READ_ERROR", file_path, msg)
             return False, False, pdf_version, pdf_creator, pdf_producer
         try:
-            with fitz.open(file_path) as doc:
-                if doc.page_count > 0:
-                    is_valid = True
-                    meta = doc.metadata or {}
-                    pdf_creator = meta.get('creator')
-                    pdf_producer = meta.get('producer')
-                    # Progress reporting for large PDFs
-                    from tqdm import tqdm
-                    for i in tqdm(range(doc.page_count), desc=f"Extracting text: {os.path.basename(file_path)}", leave=False):
-                        page = doc.load_page(i)
-                        text = ''
-                        get_text_fn = getattr(page, 'get_text', None)
-                        getText_fn = getattr(page, 'getText', None)
-                        try:
-                            if callable(get_text_fn):
-                                text = get_text_fn("text")
-                            elif callable(getText_fn):
-                                text = getText_fn("text")
-                        except Exception as e:
-                            self.log_error("TEXT_EXTRACTION_ERROR", file_path, str(e))
-                        if text:
-                            has_text = True
-                            break
+            with self.timeout_handler(30):
+                with self.suppress_mupdf_errors():
+                    with fitz.open(file_path) as doc:
+                        if doc.page_count > 0:
+                            is_valid = True
+                            meta = doc.metadata or {}
+                            pdf_creator = meta.get('creator')
+                            pdf_producer = meta.get('producer')
+                            # Limit text extraction for very large PDFs to prevent memory issues
+                            max_pages_to_check = min(doc.page_count, 10)
+                            from tqdm import tqdm
+                            for i in tqdm(range(max_pages_to_check), desc=f"Extracting text: {os.path.basename(file_path)}", leave=False):
+                                try:
+                                    page = doc.load_page(i)
+                                    text = ''
+                                    get_text_fn = getattr(page, 'get_text', None)
+                                    getText_fn = getattr(page, 'getText', None)
+                                    try:
+                                        if callable(get_text_fn):
+                                            text = get_text_fn("text")
+                                        elif callable(getText_fn):
+                                            text = getText_fn("text")
+                                    except Exception as e:
+                                        self.log_error("TEXT_EXTRACTION_ERROR", file_path, str(e))
+                                        continue
+                                    if text and text.strip():
+                                        has_text = True
+                                        break
+                                except (MemoryError, RuntimeError) as e:
+                                    # Skip corrupted pages that cause memory issues
+                                    continue
+        except TimeoutError as e:
+            msg = f"PDF processing timeout: {e}"
+            self.log_error("PDF_TIMEOUT_ERROR", file_path, msg)
+            # Try qpdf as fallback for timeout PDFs
+            is_valid, qpdf_check_output = self.qpdf_check_pdf(file_path)
+            qpdf_checked = True
+        except (MemoryError, RuntimeError) as e:
+            # Handle memory allocation failures from corrupted PDFs
+            msg = f"Memory/Runtime error with PDF: {e}"
+            self.log_error("PDF_MEMORY_ERROR", file_path, msg)
+            # Try qpdf as fallback for corrupted PDFs
+            is_valid, qpdf_check_output = self.qpdf_check_pdf(file_path)
+            qpdf_checked = True
         except Exception as e:
             msg = f"Could not open PDF with PyMuPDF: {e}"
             if msg not in mupdf_error_seen:
@@ -126,12 +190,16 @@ class PDFManager:
             return True
         # Try to extract pages with PyMuPDF as a last resort
         try:
-            doc = fitz.open(input_path)
-            if doc.page_count > 0:
-                doc.save(output_path, garbage=4, deflate=True, clean=True)
-                print(f"  [INFO] PDF re-saved with PyMuPDF: {input_path} -> {output_path}")
-                self.log_error("PDF_REPAIR_PYMUPDF", input_path, "Re-saved with PyMuPDF")
-                return True
+            with self.suppress_mupdf_errors():
+                doc = fitz.open(input_path)
+                if doc.page_count > 0:
+                    doc.save(output_path, garbage=4, deflate=True, clean=True)
+                    print(f"  [INFO] PDF re-saved with PyMuPDF: {input_path} -> {output_path}")
+                    self.log_error("PDF_REPAIR_PYMUPDF", input_path, "Re-saved with PyMuPDF")
+                    return True
+        except (MemoryError, RuntimeError) as e:
+            msg = f"Memory/Runtime error during PDF repair: {e}"
+            self.log_error("PDF_REPAIR_MEMORY_ERROR", input_path, msg)
         except Exception as e:
             msg = f"Could not re-save PDF with PyMuPDF: {e}"
             print(f"  [Warning] {msg} {input_path}", file=sys.stderr)
