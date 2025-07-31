@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.backup
 
 # C extensions
 *.so
@@ -17,7 +18,7 @@ venv/
 .idea/
 .vscode/
 .DS_Store
-
+ERROR_FIXES_SUMMARY.md
 
 
 # Distribution / packaging
