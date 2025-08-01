@@ -1,21 +1,22 @@
 import sys
 
 class Logger:
-    def __init__(self, log_file="librarian_run.log", max_errors=10000):
+    def __init__(self, log_file="librarian_run.log", max_errors=10000, cleanup_old_log=False):
         self.log_file = log_file
         self._logged_errors = set()
         self._error_counts = {}
         self.max_errors = max_errors
         self._total_logged = 0
         
-        # Clean up old log file
-        import os
-        if os.path.exists(self.log_file):
-            try:
-                os.remove(self.log_file)
-                print(f"[CLEANUP] Removed old log file: {self.log_file}")
-            except Exception as e:
-                print(f"[CLEANUP] Could not remove old log file {self.log_file}: {e}")
+        # Clean up old log file only if explicitly requested
+        if cleanup_old_log:
+            import os
+            if os.path.exists(self.log_file):
+                try:
+                    os.remove(self.log_file)
+                    print(f"[CLEANUP] Removed old log file: {self.log_file}")
+                except Exception as e:
+                    print(f"[CLEANUP] Could not remove old log file {self.log_file}: {e}")
 
     def log_error(self, error_type, file_path, message, extra=None):
         try:

@@ -24,7 +24,7 @@ def main():
     
     # Set a hard memory limit of 1GB for the process
     memory_limit = 1024 * 1024 * 1024  # 1GB in bytes
-    logger = Logger()
+    logger = Logger(cleanup_old_log=True)  # Only cleanup in main entry point
     try:
         resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
         logger.log_error("INFO", "librarian.py", f"[RESOURCE] Set hard memory limit: {memory_limit//(1024*1024)}MB (1GB)")
@@ -52,15 +52,36 @@ def main():
         classifier = Classifier(config.get('knowledge_base_db_url') or "knowledge.sqlite")
         pdf_manager = PDFManager(logger.log_error)
         builder = LibraryBuilder(config, resource_mgr, classifier, pdf_manager, logger)
+        
+        # Step 1: Scan files
         logger.log_error("STEP", "librarian.py", '[STEP] Starting scan_files...')
         builder.scan_files()
+        resource_mgr.force_cleanup()
+        logger.log_error('MEMORY', 'scan_files', 'Memory cleanup after scan_files')
+        
+        # Step 2: Validate PDFs
         logger.log_error("STEP", "librarian.py", '[STEP] Starting validate_and_repair_pdfs...')
         builder.validate_and_repair_pdfs()
+        resource_mgr.force_cleanup()
+        logger.log_error('MEMORY', 'validate_pdfs', 'Memory cleanup after validate_and_repair_pdfs')
+        
+        # Step 3: Classify and analyze
         logger.log_error("STEP", "librarian.py", '[STEP] Starting classify_and_analyze...')
         builder.classify_and_analyze()
+        resource_mgr.force_cleanup()
+        logger.log_error('MEMORY', 'classify_analyze', 'Memory cleanup after classify_and_analyze')
+        
+        # Step 4: Deduplicate
         logger.log_error("STEP", "librarian.py", '[STEP] Starting deduplicate_files...')
         unique_files = builder.deduplicate_files()
+        resource_mgr.force_cleanup()
+        logger.log_error('MEMORY', 'deduplicate', 'Memory cleanup after deduplicate_files')
+        
+        # Step 5: Copy and index
         builder.copy_and_index(unique_files)
+        resource_mgr.force_cleanup()
+        logger.log_error('MEMORY', 'copy_index', 'Memory cleanup after copy_and_index')
+        
         logger.print_summary()
         logger.log_error("STEP", "librarian.py", '[STEP] Workflow complete.')
     except Exception as e:

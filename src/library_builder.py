@@ -261,20 +261,24 @@ class LibraryBuilder:
         """Add object to temporary cleanup list"""
         self._temp_objects.append(obj)
         return obj
+        
+
 
     def scan_files(self):
         print("[STEP] Starting scan_files...")
+        self.logger.log_error('PROGRESS', 'scan_files', 'Starting file scan')
         import gc
         import csv
-        from src.cleanup_utils import cleanup_temp_files
-        
-        # Clean up any existing temporary files
-        cleanup_temp_files()
         
         source_paths = self.config['source_paths']
         batch_size = 100
         total_files = 0
         temp_csv = 'file_scan_batches.csv'
+        
+        # Remove old temp file if exists
+        if os.path.exists(temp_csv):
+            os.remove(temp_csv)
+            self.logger.log_error('INFO', 'scan_files', f'Removed old temp file: {temp_csv}')
         # Write header
         with open(temp_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=['path','name','size'])
@@ -351,14 +355,20 @@ class LibraryBuilder:
                 mem_info = process.memory_info()
                 print(f"[RESOURCE][SCAN] RAM after batch: {mem_info.rss//(1024*1024)}MB")
         print(f"[INFO] Found {total_files} total files.")
+        self.logger.log_error('PROGRESS', 'scan_files', f'Found {total_files} total files')
         # Streaming read from disk
         # Use a very small chunk size and python engine for robustness
         self.df = pd.read_csv(temp_csv, chunksize=25, engine='python')
         print(f"[INFO] File scan batches written to {temp_csv} and ready for streaming processing.")
+        self.logger.log_error('PROGRESS', 'scan_files', 'File scan complete')
+        # Clear scan-specific variables
+        del source_paths, batch_size
+        self._cleanup_temp_objects()
         return self.df
 
     def validate_and_repair_pdfs(self):
         print("[STEP] Starting validate_and_repair_pdfs...")
+        self.logger.log_error('PROGRESS', 'validate_pdfs', 'Starting PDF validation')
         import sys
         import traceback
         import psutil
@@ -367,6 +377,7 @@ class LibraryBuilder:
         
         if self.df is None:
             print("[ERROR] No files to validate.")
+            self.logger.log_error('ERROR', 'validate_pdfs', 'No files to validate - df is None')
             self.pdf_validation = {}
             return self.pdf_validation
 
@@ -401,7 +412,9 @@ class LibraryBuilder:
                 print(f"[WARNING] Error enforcing memory limits: {e}")
 
         try:
+            self.logger.log_error('INFO', 'validate_pdfs', f'Starting PDF validation with chunk size: {chunk_size}')
             for chunk_idx, chunk in enumerate(pd.read_csv(temp_csv, chunksize=chunk_size, engine='python')):
+                self.logger.log_error('INFO', 'validate_pdfs', f'Processing PDF chunk {chunk_idx+1}')
                 enforce_memory_limits()
                 # Always use sequential processing for PDFs to prevent memory issues
                 max_workers = 1
@@ -481,20 +494,22 @@ class LibraryBuilder:
         except Exception as e:
             print(f"[ERROR] Exception during PDF validation/repair: {e}")
             print(f"[INFO] Continuing with limited PDF validation results...")
-            with open('librarian_run.log', 'a') as logf:
-                logf.write(f"[ERROR] Exception during PDF validation/repair: {e}\n{traceback.format_exc()}\n")
+            self.logger.log_error('ERROR', 'validate_pdfs', f'Exception during PDF validation: {e}', extra=traceback.format_exc())
         
         enforce_memory_limits()
         self.pdf_validation = pdf_validation
         print(f"[INFO] PDF validation/repair complete. Total PDFs processed: {len(pdf_validation)}")
+        self.logger.log_error('PROGRESS', 'validate_pdfs', f'PDF validation complete. Processed: {len(pdf_validation)} PDFs')
+        # Clear validation-specific variables
+        del temp_csv, chunk_size
+        self._cleanup_temp_objects()
         return self.pdf_validation
 
     def classify_and_analyze(self):
         print("[STEP] Starting classify_and_analyze...")
+        self.logger.log_error('PROGRESS', 'classify_analyze', 'Starting classification and analysis')
         import sys
         from pandas.errors import ParserError
-        
-        self.logger.log_error('PROGRESS', '', 'Starting classification and analysis')
         temp_csv = 'file_scan_batches.csv'
         
         if not os.path.exists(temp_csv):
@@ -580,23 +595,27 @@ class LibraryBuilder:
             with open('librarian_run.log', 'a') as logf:
                 logf.write(f"[ERROR] Exception during streaming classification: {e}\n{traceback.format_exc()}\n")
         self.analysis_results = analysis_results
-        self.logger.log_error('PROGRESS', '', 'Classification and analysis complete')
+        self.logger.log_error('PROGRESS', 'classify_analyze', f'Classification complete. Results: {len(analysis_results)}')
         print(f"[INFO] Classification and analysis complete.")
+        # Clear classification-specific variables
+        del temp_csv, knowledge_db_path, analyze_row_partial
+        self._cleanup_temp_objects()
         return self.analysis_results
 
 
     def deduplicate_files(self):
         print("[STEP] Starting deduplicate_files...")
-        self.logger.log_error('PROGRESS', '', 'Starting deduplication')
+        self.logger.log_error('PROGRESS', 'deduplicate', 'Starting deduplication')
+        
+        # Initialize variables at the start to prevent unbound errors
+        temp_csv = 'file_scan_batches.csv'
+        best_files = {}
+        analysis_chunks = []
 
         if not self.analysis_results:
             print("[ERROR] No analysis results to deduplicate. Skipping deduplication.")
             return None
 
-        temp_csv = 'file_scan_batches.csv'
-        best_files = {}
-
-        # Process analysis results in chunks to avoid memory issues
         analysis_chunks = [self.analysis_results[i:i+1000] for i in range(0, len(self.analysis_results), 1000)]
 
         try:
@@ -662,8 +681,8 @@ class LibraryBuilder:
             return None
 
         finally:
-            # Clean up analysis chunks
-            del analysis_chunks
+            if 'analysis_chunks' in locals() and analysis_chunks is not None:
+                del analysis_chunks
             self._cleanup_temp_objects()
             
         if not best_files:
@@ -693,8 +712,11 @@ class LibraryBuilder:
             self.df = unique_files
             self.unique_files = unique_files
 
-            self.logger.log_error('PROGRESS', '', f'Deduplication complete. Unique files: {len(unique_files)}')
+            self.logger.log_error('PROGRESS', 'deduplicate', f'Deduplication complete. Unique files: {len(unique_files)}')
             print(f"[INFO] Deduplication complete. Unique files: {len(unique_files)}")
+            # Clear deduplication-specific variables
+            del temp_csv
+            self._cleanup_temp_objects()
             return unique_files
 
         except Exception as e:
@@ -739,7 +761,7 @@ class LibraryBuilder:
             self.isbn_cache = {}
             if hasattr(self, 'df') and self.df is not None:
                 del self.df
-            if hasattr(self, 'unique_files') and self.unique_files is not None:
+            if hasattr(self, 'unique_files') and hasattr(self, 'unique_files') and self.unique_files is not None:
                 del self.unique_files
             self._cleanup_temp_objects()
 
@@ -888,8 +910,11 @@ class LibraryBuilder:
         
         copied_count = 0
         failed_count = 0
+        batch_size = 100
+        batch = None
         
         try:
+            batch = []
             self.logger.log_error('PROGRESS', '', 'Copying files and building index')
             
             with sqlite3.connect(db_path) as conn:
@@ -907,9 +932,6 @@ class LibraryBuilder:
                         hash TEXT
                     )
                 ''')
-                
-                batch = []
-                batch_size = 100
                 
                 for idx, row in tqdm(unique_files.iterrows(), 
                                    total=len(unique_files), 
@@ -998,5 +1020,14 @@ class LibraryBuilder:
         
         finally:
             print(f"[INFO] Copy complete. Copied: {copied_count}, Failed: {failed_count}")
+            # Clear copy-specific variables
+            try:
+                del LIBRARY_ROOT, DB_FILE, db_path
+            except NameError:
+                pass
+            if batch is not None:
+                try:
+                    del batch
+                except NameError:
+                    pass
             self._cleanup_temp_objects()
-

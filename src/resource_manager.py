@@ -219,3 +219,39 @@ class ResourceManager:
         """Clean up temporary objects and force garbage collection"""
         import gc
         gc.collect()
+        
+    def aggressive_cleanup_after_phase(self, phase_name, logger):
+        """Aggressive memory cleanup after each major processing phase"""
+        import gc
+        import psutil
+        import time
+        
+        try:
+            # Get memory before cleanup
+            process = psutil.Process()
+            mem_before = process.memory_info().rss / (1024*1024)
+            
+            # Force multiple garbage collection cycles
+            for _ in range(5):
+                gc.collect()
+                time.sleep(0.1)  # Brief pause between collections
+            
+            # Clear cached values
+            self._cached_worker_count = None
+            self._last_check_time = 0
+            
+            # Get memory after cleanup
+            mem_after = process.memory_info().rss / (1024*1024)
+            freed_mb = mem_before - mem_after
+            
+            logger.log_error('MEMORY', phase_name, f'Aggressive cleanup: {mem_before:.1f}MB -> {mem_after:.1f}MB (freed {freed_mb:.1f}MB)')
+            print(f"[MEMORY] {phase_name} cleanup: freed {freed_mb:.1f}MB, now using {mem_after:.1f}MB")
+            
+            # Check if we're still under memory pressure
+            if self._detect_memory_pressure():
+                logger.log_error('WARNING', phase_name, 'Memory pressure still detected after cleanup')
+                print(f"[WARNING] Memory pressure still detected after {phase_name} cleanup")
+            
+        except Exception as e:
+            logger.log_error('ERROR', phase_name, f'Error during aggressive cleanup: {e}')
+            print(f"[ERROR] Error during {phase_name} cleanup: {e}")
