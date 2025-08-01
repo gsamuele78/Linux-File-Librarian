@@ -221,7 +221,7 @@ def parallel_map_parse(parse_func, url_list, *args, **kwargs):
                     errors.append((item, str(e)))
         
         # Cleanup between batches
-        self._cleanup_temp_objects()
+        _cleanup_temp_objects()
         time.sleep(0.5)  # Brief pause between batches
     
     return results, errors
@@ -752,7 +752,9 @@ def parse_wikipedia_generic(conn, url, system, category, lang, description):
     tables = []
     for tag in content.find_all('table'):
         if isinstance(tag, Tag):
-            cls = tag.get('class', [])
+            cls = tag.get('class', None)
+            if cls is None:
+                cls = []
             if isinstance(cls, str):
                 cls = [cls]
             if any(c in cls for c in ['wikitable', 'sortable', 'navbox', 'infobox']):
@@ -1053,7 +1055,7 @@ def main():
         # Load configuration
         config = load_config()
         urls_to_scrape = config['knowledge_base_urls']
-        url_languages = config.get('knowledge_base_url_languages', {})
+        url_languages = config.get('knowledge_base_url_languages') or {}
         
         if not urls_to_scrape:
             print("[WARNING] No URLs configured for scraping")
