@@ -20,6 +20,11 @@ HEADERS = {'User-Agent': USER_AGENT}
 
 def init_db():
     """Initializes a fresh database, deleting any existing one to ensure a clean build."""
+    from src.cleanup_utils import cleanup_temp_files
+    
+    # Clean up temporary files before starting
+    cleanup_temp_files()
+    
     if os.path.exists(DB_FILE):
         try:
             os.remove(DB_FILE)

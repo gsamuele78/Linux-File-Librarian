@@ -266,13 +266,15 @@ class LibraryBuilder:
         print("[STEP] Starting scan_files...")
         import gc
         import csv
+        from src.cleanup_utils import cleanup_temp_files
+        
+        # Clean up any existing temporary files
+        cleanup_temp_files()
+        
         source_paths = self.config['source_paths']
         batch_size = 100
         total_files = 0
         temp_csv = 'file_scan_batches.csv'
-        # Remove old temp file if exists
-        if os.path.exists(temp_csv):
-            os.remove(temp_csv)
         # Write header
         with open(temp_csv, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=['path','name','size'])

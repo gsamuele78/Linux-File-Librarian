@@ -18,6 +18,10 @@ class SearchApp(tk.Tk):
     def __init__(self, config):
         super().__init__()
         
+        # Clean up any temporary GUI files
+        from src.cleanup_utils import cleanup_temp_files
+        cleanup_temp_files()
+        
         # Load configuration settings
         self.library_root = config['library_root']
         self.db_path = os.path.join(self.library_root, "library_index.sqlite")

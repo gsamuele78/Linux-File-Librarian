@@ -17,6 +17,11 @@ from src.logger import Logger
 def main():
     # Set a hard memory limit for the process (Linux/Unix only)
     import resource
+    from src.cleanup_utils import cleanup_temp_files
+    
+    # Clean up any existing temporary files before starting
+    cleanup_temp_files()
+    
     # Set a hard memory limit of 1GB for the process
     memory_limit = 1024 * 1024 * 1024  # 1GB in bytes
     logger = Logger()
