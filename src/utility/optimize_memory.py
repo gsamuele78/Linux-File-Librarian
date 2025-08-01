@@ -13,28 +13,33 @@ def check_system_resources():
     print("System Resource Check")
     print("=" * 30)
     
-    # Memory info
-    memory = psutil.virtual_memory()
-    print(f"Total RAM: {memory.total / (1024**3):.1f} GB")
-    print(f"Available RAM: {memory.available / (1024**3):.1f} GB")
-    print(f"Used RAM: {memory.used / (1024**3):.1f} GB")
-    print(f"Memory Usage: {memory.percent:.1f}%")
-    
-    # Swap info
-    swap = psutil.swap_memory()
-    print(f"Total Swap: {swap.total / (1024**3):.1f} GB")
-    print(f"Used Swap: {swap.used / (1024**3):.1f} GB")
-    print(f"Swap Usage: {swap.percent:.1f}%")
-    
-    # CPU info
-    print(f"CPU Cores: {psutil.cpu_count()}")
-    print(f"CPU Usage: {psutil.cpu_percent(interval=1):.1f}%")
-    
-    # Disk space
-    disk = psutil.disk_usage('/')
-    print(f"Disk Space: {disk.free / (1024**3):.1f} GB free of {disk.total / (1024**3):.1f} GB")
-    
-    return memory.available / (1024**2)  # Return available MB
+    try:
+        # Memory info
+        memory = psutil.virtual_memory()
+        print(f"Total RAM: {memory.total / (1024**3):.1f} GB")
+        print(f"Available RAM: {memory.available / (1024**3):.1f} GB")
+        print(f"Used RAM: {memory.used / (1024**3):.1f} GB")
+        print(f"Memory Usage: {memory.percent:.1f}%")
+        
+        # Swap info
+        swap = psutil.swap_memory()
+        print(f"Total Swap: {swap.total / (1024**3):.1f} GB")
+        print(f"Used Swap: {swap.used / (1024**3):.1f} GB")
+        print(f"Swap Usage: {swap.percent:.1f}%")
+        
+        # CPU info
+        print(f"CPU Cores: {psutil.cpu_count()}")
+        print(f"CPU Usage: {psutil.cpu_percent(interval=1):.1f}%")
+        
+        # Disk space
+        disk = psutil.disk_usage('/')
+        print(f"Disk Space: {disk.free / (1024**3):.1f} GB free of {disk.total / (1024**3):.1f} GB")
+        
+        return memory.available / (1024**2)  # Return available MB
+        
+    except Exception as e:
+        print(f"[ERROR] Could not check system resources: {e}")
+        return 2000  # Default fallback MB
 
 def optimize_system():
     """Perform system optimizations"""
@@ -46,9 +51,9 @@ def optimize_system():
     collected = gc.collect()
     print(f"Collected {collected} objects")
     
-    # Clear Python caches
+    # Clear Python caches (safer approach)
     print("Clearing Python caches...")
-    sys.modules.clear()
+    gc.collect()
     
     # Suggest system optimizations
     print("\nRecommended system optimizations:")
@@ -56,13 +61,16 @@ def optimize_system():
     print("2. Clear browser caches")
     print("3. Restart the system if memory usage is high")
     
-    memory = psutil.virtual_memory()
-    if memory.percent > 80:
-        print("\n[WARNING] High memory usage detected!")
-        print("Consider:")
-        print("- Restarting the system")
-        print("- Closing other applications")
-        print("- Running the librarian with smaller batch sizes")
+    try:
+        memory = psutil.virtual_memory()
+        if memory.percent > 80:
+            print("\n[WARNING] High memory usage detected!")
+            print("Consider:")
+            print("- Restarting the system")
+            print("- Closing other applications")
+            print("- Running the librarian with smaller batch sizes")
+    except Exception as e:
+        print(f"\n[WARNING] Could not check memory status: {e}")
 
 def suggest_config_optimizations(available_mb):
     """Suggest configuration optimizations based on available memory"""
@@ -134,17 +142,24 @@ def main():
     print("Linux File Librarian - Memory Optimization")
     print("=" * 50)
     
-    # Check system resources
-    available_mb = check_system_resources()
-    
-    # Optimize system
-    optimize_system()
-    
-    # Suggest configuration optimizations
-    suggest_config_optimizations(available_mb)
-    
-    # Clean log files
-    clean_log_files()
+    try:
+        # Check system resources
+        available_mb = check_system_resources()
+        
+        # Optimize system
+        optimize_system()
+        
+        # Suggest configuration optimizations
+        suggest_config_optimizations(available_mb)
+        
+        # Clean log files
+        clean_log_files()
+        
+    except Exception as e:
+        print(f"\n[ERROR] Optimization failed: {e}")
+        print("Continuing with basic cleanup...")
+        gc.collect()
+        available_mb = 2000  # Default fallback
     
     print("\n" + "=" * 50)
     print("OPTIMIZATION COMPLETE")
