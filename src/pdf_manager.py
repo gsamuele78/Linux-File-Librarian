@@ -48,7 +48,11 @@ class PDFManager:
         finally:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old_handler)
-            gc.collect()  # Force cleanup after timeout
+            self._cleanup_temp_objects()  # Force cleanup after timeout
+            
+    def _cleanup_temp_objects(self):
+        """Clean up temporary objects and force garbage collection"""
+        gc.collect()
 
     def qpdf_check_pdf(self, file_path):
         try:
@@ -123,7 +127,7 @@ class PDFManager:
                                     except Exception as e:
                                         self.log_error("TEXT_EXTRACTION_ERROR", file_path, str(e))
                                         continue
-                                    if text and text.strip():
+                                    if text and str(text).strip():
                                         has_text = True
                                         break
                                 except (MemoryError, RuntimeError) as e:

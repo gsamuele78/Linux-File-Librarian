@@ -3,6 +3,7 @@ import gc
 import mimetypes
 import traceback
 import pandas as pd
+import weakref
 from pathlib import Path
 from concurrent.futures import as_completed
 from functools import partial
@@ -244,6 +245,22 @@ class LibraryBuilder:
         self.analysis_results = []
         self.pdf_validation = {}
         self.isbn_cache = {}
+        self._temp_objects = []  # Track temporary objects for cleanup
+        
+    def _cleanup_temp_objects(self):
+        """Clean up temporary objects and force garbage collection"""
+        for obj in self._temp_objects:
+            try:
+                del obj
+            except:
+                pass
+        self._temp_objects.clear()
+        gc.collect()
+        
+    def _add_temp_object(self, obj):
+        """Add object to temporary cleanup list"""
+        self._temp_objects.append(obj)
+        return obj
 
     def scan_files(self):
         print("[STEP] Starting scan_files...")
@@ -314,7 +331,7 @@ class LibraryBuilder:
                     total_files += len(batch)
                     print(f"[INFO] Scanned {total_files} files so far...")
                     batch.clear()
-                    gc.collect()
+                    self._cleanup_temp_objects()
                     import psutil
                     process = psutil.Process()
                     mem_info = process.memory_info()
@@ -326,7 +343,7 @@ class LibraryBuilder:
                 total_files += len(batch)
                 print(f"[INFO] Scanned {total_files} files so far...")
                 batch.clear()
-                gc.collect()
+                self._cleanup_temp_objects()
                 import psutil
                 process = psutil.Process()
                 mem_info = process.memory_info()
@@ -421,7 +438,7 @@ class LibraryBuilder:
                             
                             # Cleanup after each file
                             del pdf_manager
-                            gc.collect()
+                            self._cleanup_temp_objects()
                             
                             # Check memory pressure every 10 files
                             if (i + 1) % 10 == 0:
@@ -524,29 +541,29 @@ class LibraryBuilder:
                             self.logger.log_error('ANALYSIS_ERROR', str(row_info), str(e)[:100])
                         
                         # Force garbage collection after each file and check memory pressure
-                        gc.collect()
+                        self._cleanup_temp_objects()
                         if self.resource_mgr._detect_memory_pressure():
                             print("[RESOURCE] Memory pressure detected, pausing...")
                             import time
                             time.sleep(1)
-                            gc.collect()
+                            self._cleanup_temp_objects()
                     
                     print("[LOG] Classification worker batch completed.")
                     
                     # Force garbage collection after each chunk
-                    gc.collect()
+                    self._cleanup_temp_objects()
                 except ParserError as pe:
                     print(f"[ERROR] ParserError in classification chunk {chunk_idx+1}: {pe}")
                     with open('librarian_run.log', 'a') as logf:
                         logf.write(f"[ERROR] ParserError in classification chunk {chunk_idx+1}: {pe}\n")
-                    gc.collect()
+                    self._cleanup_temp_objects()
                     continue
                 except MemoryError as me:
                     print(f"[ERROR] MemoryError during classification chunk {chunk_idx+1}: {me}")
                     self.logger.log_error('MEMORY_ERROR', f'chunk_{chunk_idx+1}', 'Memory error during classification')
                     # Emergency memory cleanup
                     analysis_results = analysis_results[-1000:] if len(analysis_results) > 1000 else analysis_results
-                    gc.collect()
+                    self._cleanup_temp_objects()
                     import time
                     time.sleep(2)  # Give system time to recover
                     continue
@@ -554,7 +571,7 @@ class LibraryBuilder:
                     print(f"[ERROR] Exception during classification chunk {chunk_idx+1}: {e}")
                     with open('librarian_run.log', 'a') as logf:
                         logf.write(f"[ERROR] Exception during classification chunk {chunk_idx+1}: {e}\n{traceback.format_exc()}\n")
-                    gc.collect()
+                    self._cleanup_temp_objects()
                     continue
         except Exception as e:
             print(f"[ERROR] Exception during streaming classification: {e}")
@@ -635,7 +652,7 @@ class LibraryBuilder:
 
                 # Memory cleanup after each chunk
                 del df
-                gc.collect()
+                self._cleanup_temp_objects()
 
         except Exception as e:
             print(f"[ERROR] Error during deduplication: {e}")
@@ -645,7 +662,7 @@ class LibraryBuilder:
         finally:
             # Clean up analysis chunks
             del analysis_chunks
-            gc.collect()
+            self._cleanup_temp_objects()
             
         if not best_files:
             print("[WARNING] No files with valid hashes found for deduplication.")
@@ -686,18 +703,43 @@ class LibraryBuilder:
         finally:
             # Clean up best_files dict
             del best_files
-            gc.collect()        
+            self._cleanup_temp_objects()        
 
     def build(self):
-        self.scan_files()
-        self.validate_and_repair_pdfs()
-        # Automated concurrent access test for knowledge.sqlite
-        self.test_knowledge_db_concurrent_access()
-        self.classify_and_analyze()
-        unique_files = self.deduplicate_files()
-        self.copy_and_index(unique_files)
-        self.logger.print_summary()
-        print("[INFO] Library build process complete.")
+        try:
+            self.scan_files()
+            self._cleanup_temp_objects()
+            
+            self.validate_and_repair_pdfs()
+            self._cleanup_temp_objects()
+            
+            # Automated concurrent access test for knowledge.sqlite
+            self.test_knowledge_db_concurrent_access()
+            self._cleanup_temp_objects()
+            
+            self.classify_and_analyze()
+            self._cleanup_temp_objects()
+            
+            unique_files = self.deduplicate_files()
+            self._cleanup_temp_objects()
+            
+            self.copy_and_index(unique_files)
+            self._cleanup_temp_objects()
+            
+            self.logger.print_summary()
+            print("[INFO] Library build process complete.")
+        finally:
+            # Final cleanup
+            self._cleanup_temp_objects()
+            # Clear large data structures
+            self.analysis_results = []
+            self.pdf_validation = {}
+            self.isbn_cache = {}
+            if hasattr(self, 'df') and self.df is not None:
+                del self.df
+            if hasattr(self, 'unique_files') and self.unique_files is not None:
+                del self.unique_files
+            self._cleanup_temp_objects()
 
     def get_file_hash(self, path, block_size=65536):
         import hashlib
@@ -928,7 +970,7 @@ class LibraryBuilder:
                             )
                             conn.commit()
                             batch.clear()
-                            gc.collect()  # Memory cleanup
+                            self._cleanup_temp_objects()  # Memory cleanup
                         
                     except Exception as e:
                         print(f"[Error] Could not copy {row.get('path', 'unknown')}: {e}")
@@ -954,5 +996,5 @@ class LibraryBuilder:
         
         finally:
             print(f"[INFO] Copy complete. Copied: {copied_count}, Failed: {failed_count}")
-            gc.collect()
+            self._cleanup_temp_objects()
 

@@ -79,6 +79,10 @@ def get_session():
         _session.headers.update(HEADERS)
     return _session
 
+def _cleanup_temp_objects():
+    """Clean up temporary objects and force garbage collection"""
+    gc.collect()
+
 def safe_request(url, retries=3, delay=2):
     """
     Makes a web request with retries and handles network errors robustly.
@@ -181,7 +185,7 @@ def parallel_map_parse(parse_func, url_list, *args, **kwargs):
         try:
             result = parse_func(item, *args, **kwargs)
             # Force cleanup after each parse
-            gc.collect()
+            _cleanup_temp_objects()
             return result
         except Exception as e:
             print(f"  [ERROR] Exception in parallel parse for {item}: {e}", file=sys.stderr)
@@ -212,7 +216,7 @@ def parallel_map_parse(parse_func, url_list, *args, **kwargs):
                     errors.append((item, str(e)))
         
         # Cleanup between batches
-        gc.collect()
+        self._cleanup_temp_objects()
         time.sleep(0.5)  # Brief pause between batches
     
     return results, errors

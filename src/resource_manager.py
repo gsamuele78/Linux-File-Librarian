@@ -207,10 +207,15 @@ class ResourceManager:
     def force_cleanup(self):
         """Force garbage collection and memory cleanup"""
         import gc
-        gc.collect()
+        self._cleanup_temp_objects()
         
         # Clear cached values
         self._cached_worker_count = None
         self._last_check_time = 0
         
         print("[RESOURCE] Forced cleanup completed")
+        
+    def _cleanup_temp_objects(self):
+        """Clean up temporary objects and force garbage collection"""
+        import gc
+        gc.collect()
