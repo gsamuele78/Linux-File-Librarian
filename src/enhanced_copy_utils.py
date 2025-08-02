@@ -1,184 +1,115 @@
 #!/usr/bin/env python3
 """
-Enhanced copy utilities with hierarchical directory structure
+Enterprise File Organization System
+Implements professional hierarchical structure using classification data
 """
 
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Dict
+from dataclasses import dataclass
+
+
+@dataclass
+class OrganizationHierarchy:
+    """Professional file organization structure"""
+    primary: str
+    secondary: str
+    tertiary: Optional[str] = None
+    
+    def to_path(self, root: Path) -> Path:
+        """Convert hierarchy to filesystem path"""
+        path = root / self.primary / self.secondary
+        return path / self.tertiary if self.tertiary else path
+
+
+class EnterpriseFileOrganizer:
+    """Enterprise-grade file organization using classification data"""
+    
+    @classmethod
+    def organize_file(cls, file_info: Dict) -> OrganizationHierarchy:
+        """Create professional organization hierarchy"""
+        game_system = file_info.get('game_system', 'Unknown')
+        category = file_info.get('category', 'Unknown')
+        source_path = Path(file_info['path'])
+        
+        # TTRPG files
+        if game_system not in ['Unknown', 'Miscellaneous']:
+            return cls._organize_ttrpg_file(file_info, source_path)
+        
+        # Content-based organization
+        return cls._organize_content_file(file_info, source_path)
+    
+    @classmethod
+    def _organize_ttrpg_file(cls, file_info: Dict, source_path: Path) -> OrganizationHierarchy:
+        """Organize TTRPG files"""
+        game_system = file_info.get('game_system', 'Unknown')
+        edition = file_info.get('edition', 'General')
+        content_type = cls._detect_ttrpg_content(source_path)
+        
+        return OrganizationHierarchy(
+            primary=f"TTRPG/{game_system}",
+            secondary=edition if edition != 'Unknown' else 'General',
+            tertiary=content_type
+        )
+    
+    @classmethod
+    def _organize_content_file(cls, file_info: Dict, source_path: Path) -> OrganizationHierarchy:
+        """Organize by content type"""
+        category = file_info.get('category', 'Unknown')
+        ext = source_path.suffix.lower()
+        
+        if ext in ['.mp4', '.avi', '.mkv', '.mov']:
+            return OrganizationHierarchy('Media', 'Video', 'General')
+        elif ext in ['.mp3', '.wav', '.flac', '.ogg']:
+            return OrganizationHierarchy('Media', 'Audio', 'General')
+        elif ext in ['.jpg', '.png', '.gif', '.bmp']:
+            return OrganizationHierarchy('Media', 'Images', 'General')
+        elif ext == '.pdf':
+            return OrganizationHierarchy('Documents', 'PDF', 'General')
+        elif ext in ['.zip', '.rar', '.7z']:
+            return OrganizationHierarchy('Archives', 'Compressed', None)
+        else:
+            return OrganizationHierarchy('General', 'Uncategorized', None)
+    
+    @staticmethod
+    def _detect_ttrpg_content(source_path: Path) -> str:
+        """Detect TTRPG content type"""
+        filename = source_path.name.lower()
+        
+        if any(term in filename for term in ['core', 'player', 'handbook']):
+            return 'Core Rules'
+        elif any(term in filename for term in ['adventure', 'module']):
+            return 'Adventures'
+        elif any(term in filename for term in ['supplement', 'guide']):
+            return 'Supplements'
+        else:
+            return 'General'
 
 
 def detect_hierarchical_structure(source_path: Path, game_system: str) -> tuple:
-    """Detect hierarchical structure from source path for TTRPG files"""
-    try:
-        path_parts = source_path.parts
-        path_str = str(source_path).lower()
-        
-        # D&D hierarchical detection
-        if 'dungeons' in path_str and 'dragons' in path_str:
-            for i, part in enumerate(path_parts):
-                if 'dungeons' in part.lower() and 'dragons' in part.lower():
-                    # Extract hierarchy after D&D folder
-                    remaining_parts = path_parts[i+1:-1]  # Exclude filename
-                    if len(remaining_parts) >= 2:
-                        return remaining_parts[0], remaining_parts[1], remaining_parts[2] if len(remaining_parts) > 2 else None
-                    elif len(remaining_parts) == 1:
-                        return remaining_parts[0], 'General', None
-        
-        # Pathfinder hierarchical detection
-        if 'pathfinder' in path_str:
-            for i, part in enumerate(path_parts):
-                if 'pathfinder' in part.lower():
-                    # Extract hierarchy after Pathfinder folder
-                    remaining_parts = path_parts[i+1:-1]  # Exclude filename
-                    if len(remaining_parts) >= 2:
-                        return remaining_parts[0], remaining_parts[1], remaining_parts[2] if len(remaining_parts) > 2 else None
-                    elif len(remaining_parts) == 1:
-                        return remaining_parts[0], 'General', None
-        
-        return None, None, None
-        
-    except Exception as e:
-        print(f"Error detecting hierarchical structure for {source_path}: {e}")
-        return None, None, None
+    """Legacy function - use EnterpriseFileOrganizer instead"""
+    return None, None, None
 
 
+# Legacy functions - replaced by EnterpriseFileOrganizer
 def categorize_non_ttrpg_file(file_info: dict) -> tuple:
-    """Intelligent categorization for non-TTRPG files using classification data"""
-    category = file_info.get('category', 'Unknown')
-    game_system = file_info.get('game_system', 'Unknown')
-    edition = file_info.get('edition', 'Unknown')
-    source_path = Path(file_info['path'])
-    
-    # Media files categorization
-    if category in ['Media', 'Video', 'Audio', 'Images']:
-        media_type = _detect_media_subcategory(source_path, category)
-        return 'Media', media_type, _detect_content_type(source_path)
-    
-    # Document files categorization
-    elif category in ['Documents', 'PDF', 'Office', 'Text']:
-        doc_type = _detect_document_subcategory(source_path, category)
-        return 'Documents', doc_type, _detect_document_content(source_path)
-    
-    # Archive files categorization
-    elif category in ['Archives', 'Software & Data']:
-        archive_type = _detect_archive_subcategory(source_path)
-        return 'Archives', archive_type, 'General'
-    
-    # Unknown/Miscellaneous
-    else:
-        return 'Miscellaneous', 'General', 'Uncategorized'
-
-
-def _detect_media_subcategory(source_path: Path, category: str) -> str:
-    """Detect media subcategory from path and filename"""
-    path_str = str(source_path).lower()
-    filename = source_path.name.lower()
-    
-    if 'video' in path_str or filename.endswith(('.mp4', '.avi', '.mkv', '.mov')):
-        return 'Video'
-    elif 'audio' in path_str or filename.endswith(('.mp3', '.wav', '.flac', '.ogg')):
-        return 'Audio'
-    elif 'image' in path_str or filename.endswith(('.jpg', '.png', '.gif', '.bmp')):
-        return 'Images'
-    else:
-        return category or 'General'
-
-
-def _detect_document_subcategory(source_path: Path, category: str) -> str:
-    """Detect document subcategory from path and filename"""
-    path_str = str(source_path).lower()
-    filename = source_path.name.lower()
-    
-    if filename.endswith('.pdf'):
-        return 'PDF'
-    elif filename.endswith(('.doc', '.docx', '.odt')):
-        return 'Text Documents'
-    elif filename.endswith(('.xls', '.xlsx', '.ods')):
-        return 'Spreadsheets'
-    elif filename.endswith(('.ppt', '.pptx', '.odp')):
-        return 'Presentations'
-    else:
-        return 'General'
-
-
-def _detect_archive_subcategory(source_path: Path) -> str:
-    """Detect archive subcategory from filename"""
-    filename = source_path.name.lower()
-    
-    if filename.endswith(('.zip', '.rar', '.7z')):
-        return 'Compressed'
-    elif filename.endswith(('.iso', '.img')):
-        return 'Disk Images'
-    else:
-        return 'General'
-
-
-def _detect_content_type(source_path: Path) -> str:
-    """Detect content type from path structure"""
-    path_parts = [part.lower() for part in source_path.parts]
-    
-    if any('tutorial' in part for part in path_parts):
-        return 'Tutorials'
-    elif any('music' in part for part in path_parts):
-        return 'Music'
-    elif any('sound' in part for part in path_parts):
-        return 'Sound Effects'
-    else:
-        return 'General'
-
-
-def _detect_document_content(source_path: Path) -> str:
-    """Detect document content type from path structure"""
-    path_parts = [part.lower() for part in source_path.parts]
-    
-    if any('manual' in part for part in path_parts):
-        return 'Manuals'
-    elif any('guide' in part for part in path_parts):
-        return 'Guides'
-    elif any('reference' in part for part in path_parts):
-        return 'Reference'
-    else:
-        return 'General'
+    """Legacy function"""
+    return 'General', 'Uncategorized', None
 
 
 def create_enhanced_destination_path(destination_root: Path, file_info: dict) -> Path:
-    """Create hierarchical path using detected structure for TTRPG or intelligent categorization for others"""
-    
-    source_path = Path(file_info['path'])
-    game_system = file_info.get('game_system', 'Unknown')
-    
-    # For D&D and Pathfinder, use detected hierarchical structure
-    if game_system in ['Dungeons & Dragons', 'D&D', 'Pathfinder']:
-        level1, level2, level3 = detect_hierarchical_structure(source_path, game_system)
-        
-        if level1:
-            dest_dir = destination_root / game_system / level1
-            if level2:
-                dest_dir = dest_dir / level2
-                if level3:
-                    dest_dir = dest_dir / level3
-        else:
-            # Fallback to classification data
-            edition = file_info.get('edition', 'General')
-            category = file_info.get('category', 'General')
-            dest_dir = destination_root / game_system / edition / category
-    
-    # For other files, use intelligent categorization
-    else:
-        big_group, middle_cat, sub_cat = categorize_non_ttrpg_file(file_info)
-        dest_dir = destination_root / big_group / middle_cat
-        if sub_cat:
-            dest_dir = dest_dir / sub_cat
-    
-    return dest_dir
+    """Create professional hierarchical path using enterprise organization"""
+    hierarchy = EnterpriseFileOrganizer.organize_file(file_info)
+    return hierarchy.to_path(destination_root)
 
 
 
 def copy_file_enhanced(source_path: Path, dest_dir: Path) -> Optional[Path]:
     """Copy file to destination with conflict resolution"""
     try:
+        # Create destination directory
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_path = dest_dir / source_path.name
         
@@ -189,11 +120,48 @@ def copy_file_enhanced(source_path: Path, dest_dir: Path) -> Optional[Path]:
             suffix = source_path.suffix
             dest_path = dest_dir / f"{stem}_{counter}{suffix}"
             counter += 1
+            
+            # Prevent infinite loops
+            if counter > 1000:
+                print(f"Too many conflicts for {source_path.name}, skipping")
+                return None
         
-        # Copy file
+        # Verify source exists and is readable
+        if not source_path.exists():
+            print(f"Source file does not exist: {source_path}")
+            return None
+            
+        if not os.access(source_path, os.R_OK):
+            print(f"Source file not readable: {source_path}")
+            return None
+        
+        # Check destination directory is writable
+        if not os.access(dest_dir, os.W_OK):
+            print(f"Destination directory not writable: {dest_dir}")
+            return None
+        
+        # Copy file with metadata preservation
         shutil.copy2(source_path, dest_path)
+        
+        # Verify copy was successful
+        if not dest_path.exists():
+            print(f"Copy verification failed: {dest_path} was not created")
+            return None
+            
+        # Verify file sizes match
+        if source_path.stat().st_size != dest_path.stat().st_size:
+            print(f"Copy verification failed: size mismatch for {dest_path}")
+            dest_path.unlink()  # Remove incomplete copy
+            return None
+        
         return dest_path
         
+    except PermissionError as e:
+        print(f"Permission error copying {source_path}: {e}")
+        return None
+    except OSError as e:
+        print(f"OS error copying {source_path}: {e}")
+        return None
     except Exception as e:
-        print(f"Copy error for {source_path}: {e}")
+        print(f"Unexpected error copying {source_path}: {type(e).__name__}: {e}")
         return None

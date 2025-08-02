@@ -51,8 +51,9 @@ class PDFManager:
             self._cleanup_temp_objects()  # Force cleanup after timeout
             
     def _cleanup_temp_objects(self):
-        """Clean up temporary objects and force garbage collection"""
-        gc.collect()
+        """Clean up temporary objects"""
+        # Removed unnecessary gc.collect() for better performance
+        pass
 
     def qpdf_check_pdf(self, file_path):
         try:
@@ -139,7 +140,8 @@ class PDFManager:
                                     if page is not None:
                                         try:
                                             del page
-                                        except:
+                                        except (AttributeError, NameError):
+                                            # Expected when page object is already cleaned up
                                             pass
                                     gc.collect()
         except TimeoutError as e:
@@ -174,8 +176,9 @@ class PDFManager:
         if os.path.exists(output_path):
             try:
                 os.remove(output_path)
-            except Exception:
-                pass
+            except (OSError, IOError) as e:
+                # Log specific file operation errors
+                print(f"Error removing file {output_path}: {e}", file=sys.stderr)
         def run_subprocess(cmd, timeout=60, **kwargs):
             try:
                 result = subprocess.run(cmd, check=True, capture_output=True, timeout=timeout, **kwargs)

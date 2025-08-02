@@ -7,20 +7,23 @@ import gc
 from pathlib import Path
 
 try:
-    from rapidfuzz import fuzz
+    from rapidfuzz import fuzz as rapidfuzz_fuzz
     HAS_RAPIDFUZZ = True
+    fuzz = rapidfuzz_fuzz
 except ImportError:
     HAS_RAPIDFUZZ = False
     # Fallback fuzzy matching using difflib
     import difflib
     
-    class fuzz:
+    class FuzzFallback:
         @staticmethod
         def partial_ratio(a, b):
             """Simple fuzzy matching fallback"""
             if not a or not b:
                 return 0
             return int(difflib.SequenceMatcher(None, a, b).ratio() * 100)
+    
+    fuzz = FuzzFallback()
 
 class Classifier:
     """

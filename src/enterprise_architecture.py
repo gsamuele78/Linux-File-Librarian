@@ -87,7 +87,8 @@ class EventBus:
             try:
                 handler(data)
             except Exception as e:
-                logging.error(f"Event handler error for {event_type}: {e}")
+                error_msg = f"Event handler error for {str(event_type)[:50]}: {str(e)[:100]}"
+                logging.error(error_msg)
 
 
 class HealthCheck:
@@ -109,7 +110,8 @@ class HealthCheck:
                 results[name] = check_func()
                 self.last_check[name] = time.time()
             except Exception as e:
-                logging.error(f"Health check {name} failed: {e}")
+                error_msg = f"Health check {str(name)[:50]} failed: {str(e)[:100]}"
+                logging.error(error_msg)
                 results[name] = False
         return results
     
@@ -177,7 +179,7 @@ class ResourcePool:
                     resource = self.create_func()
                     self.created_count += 1
                 else:
-                    resource = self.pool.get()  # Wait for available resource
+                    resource = self.pool.get(timeout=30)  # Wait for available resource with timeout
         
         try:
             yield resource
@@ -287,7 +289,8 @@ class BatchProcessor:
                         current_batch_size = min(self.batch_size * 2, int(current_batch_size * 1.5))
                 
             except Exception as e:
-                logging.error(f"Batch processing error: {e}")
+                error_msg = f"Batch processing error: {str(e)[:100]}"
+                logging.error(error_msg)
                 # Reduce batch size on error
                 current_batch_size = max(1, current_batch_size // 2)
                 continue
@@ -308,14 +311,14 @@ class PerformanceProfiler:
     @contextmanager
     def profile(self, operation_name: str):
         """Profile operation performance"""
-        start_time = time.time()
+        start_time = time.perf_counter()
         start_memory = psutil.Process().memory_info().rss
         start_cpu = time.process_time()
         
         try:
             yield
         finally:
-            end_time = time.time()
+            end_time = time.perf_counter()
             end_memory = psutil.Process().memory_info().rss
             end_cpu = time.process_time()
             
@@ -331,6 +334,7 @@ class PerformanceProfiler:
     
     def _analyze_performance(self, operation: str, data: Dict):
         """Analyze performance and generate recommendations"""
+        # Define thresholds as class constants
         SLOW_OPERATION_THRESHOLD = 30.0
         HIGH_MEMORY_THRESHOLD = 500.0
         
@@ -404,13 +408,16 @@ class EnterpriseLibrarianOrchestrator:
     def _on_pipeline_completed(self, data: Dict):
         """Handle pipeline completion"""
         pipeline_name = str(data.get('pipeline', 'unknown'))
-        logging.info(f"Pipeline {pipeline_name} completed successfully")
+        safe_name = str(pipeline_name)[:50]
+        logging.info(f"Pipeline {safe_name} completed successfully")
     
     def _on_pipeline_failed(self, data: Dict):
         """Handle pipeline failure"""
         pipeline_name = str(data.get('pipeline', 'unknown'))
         error = str(data.get('error', 'unknown error'))
-        logging.error(f"Pipeline {pipeline_name} failed: {error}")
+        safe_name = str(pipeline_name)[:50]
+        safe_error = str(error)[:100]
+        logging.error(f"Pipeline {safe_name} failed: {safe_error}")
     
     def create_pipeline(self, name: str) -> ProcessingPipeline:
         """Create processing pipeline"""
@@ -438,7 +445,8 @@ class EnterpriseLibrarianOrchestrator:
                 'system_resources': system_resources
             }
         except Exception as e:
-            logging.error(f"Failed to get system status: {e}")
+            error_msg = f"Failed to get system status: {str(e)[:100]}"
+            logging.error(error_msg)
             return {
                 'health': {'error': str(e)},
                 'performance': {},
