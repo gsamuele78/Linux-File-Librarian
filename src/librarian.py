@@ -46,10 +46,11 @@ class SystemResourceMonitor:
     def get_system_limits(self) -> Dict[str, int]:
         """Calculate optimal system limits based on available resources"""
         vm = psutil.virtual_memory()
-        cpu_count = psutil.cpu_count(logical=False) or 1
-        
+        cpu_count = psutil.cpu_count(logical=False)
+        if cpu_count is None:
+            cpu_count = 1
         # Conservative memory allocation (max 60% of available)
-        max_memory_mb = int(vm.available * 0.6 / (1024 * 1024))
+        max_memory_mb = int(vm.available * 0.6 / (1024 * 1024)) if vm.available is not None else 0
         
         # Adaptive worker count based on CPU and memory
         optimal_workers = min(cpu_count, max(1, max_memory_mb // 512))
@@ -239,36 +240,16 @@ def main():
         classifier = Classifier(config.get('knowledge_base_db_url') or "knowledge.sqlite")
         pdf_manager = PDFManager(logger.log_error)
         
-        # Enterprise optimization integration
-        from src.enterprise_optimizer import get_enterprise_optimizer
-        from src.performance_monitor import get_performance_monitor, setup_monitoring_alerts
-        
-        # Setup enterprise monitoring
-        perf_monitor = setup_monitoring_alerts()
-        perf_monitor.start_monitoring()
-        
-        # Memory pressure callback with enterprise features
+        # Memory pressure callback
         def memory_pressure_callback():
             if monitor.check_memory_pressure():
                 logger.log_error('MEMORY', 'pressure', 'Memory pressure detected, forcing cleanup')
                 resource_mgr.force_cleanup()
                 gc.collect()
-                
-                # Export performance metrics on pressure
-                perf_monitor.export_metrics('performance_pressure.json', 5)
                 time.sleep(1)  # Brief pause for system recovery
         
         builder = LibraryBuilder(config, resource_mgr, classifier, pdf_manager, 
                                logger, memory_pressure_callback)
-        
-        # Apply enterprise optimizations
-        optimizer = get_enterprise_optimizer()
-        builder = optimizer.optimize_library_builder(builder)
-        
-        # Log optimization recommendations
-        recommendations = optimizer.get_system_recommendations()
-        logger.log_error('OPTIMIZER', 'recommendations', 
-                        f'System optimizations: {recommendations}')
         
         # Execute pipeline phases with circuit breaker protection
         phases = [
@@ -303,17 +284,11 @@ def main():
             execute_pipeline_phase('copy_index', builder.copy_and_index, unique_files)
             resource_mgr.aggressive_cleanup_after_phase('copy_index', logger)
         
-        # Performance summary with enterprise metrics
+        # Performance summary
         total_time = time.time() - monitor.start_time
-        perf_summary = perf_monitor.get_metrics_summary(int(total_time / 60) + 1)
-        
         logger.log_error("PERFORMANCE", "librarian", 
                         f'Total execution time: {total_time:.2f}s, '
-                        f'Peak memory: {monitor.peak_memory:.1f}MB, '
-                        f'Avg memory: {perf_summary.get("memory", {}).get("average", 0):.1f}%')
-        
-        # Export final performance report
-        perf_monitor.export_metrics('final_performance_report.json', int(total_time / 60) + 1)
+                        f'Peak memory: {monitor.peak_memory:.1f}MB')
         
         logger.print_summary()
         logger.log_error("SUCCESS", "librarian", '[SUCCESS] Workflow completed successfully')
@@ -331,11 +306,7 @@ def main():
         logger.log_error("ERROR", "librarian", 'See librarian_run.log for detailed error information')
         sys.exit(1)
     finally:
-        # Final cleanup with enterprise monitoring
-        try:
-            perf_monitor.stop_monitoring_thread()
-        except:
-            pass
+        # Final cleanup
         cleanup_temp_files()
         logger.log_error("CLEANUP", "librarian", 'Final cleanup completed')
 
