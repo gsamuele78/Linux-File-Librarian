@@ -133,8 +133,8 @@ class CircuitBreaker:
     def call(self, func, *args, **kwargs):
         """Execute function with circuit breaker protection"""
         with self._lock:
-            if self.state == "OPEN":
-                if time.time() - self.last_failure_time > self.timeout:
+            if self.state == "OPEN" and self.last_failure_time is not None:
+                if time.time() - self.last_failure_time > self.timeout: # type: ignore
                     self.state = "HALF_OPEN"
                 else:
                     raise Exception("Circuit breaker is OPEN")
@@ -241,11 +241,16 @@ class ProcessingStage(ABC):
     def __init__(self, name: str, max_workers: int = 4):
         self.name = name
         self.max_workers = max_workers
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
     
     @abstractmethod
     async def process(self, items: List[Any]) -> List[Any]:
         """Process items in this stage"""
         pass
+    
+    def __del__(self):
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=False)
 
 
 class BatchProcessor:
