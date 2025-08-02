@@ -3,6 +3,7 @@ import sys
 import sqlite3
 import re
 import unicodedata
+import gc
 from pathlib import Path
 from rapidfuzz import fuzz
 
@@ -42,25 +43,31 @@ class Classifier:
     def load_products_to_cache(self):
         if not self.conn: return
         cursor = self.conn.cursor()
-        cursor.execute("SELECT product_code, title, game_system, edition, category FROM products")
-        for code, title, system, edition, category in cursor.fetchall():
-            if code:
-                nkey = self.normalize_text(code)
-                self.product_cache[nkey] = (system, edition, category)
-            if title:
-                nkey = self.normalize_text(title)
-                self.product_cache[nkey] = (system, edition, category)
+        try:
+            cursor.execute("SELECT product_code, title, game_system, edition, category FROM products")
+            for code, title, system, edition, category in cursor.fetchall():
+                if code:
+                    nkey = self.normalize_text(code)
+                    self.product_cache[nkey] = (system, edition, category)
+                if title:
+                    nkey = self.normalize_text(title)
+                    self.product_cache[nkey] = (system, edition, category)
+        finally:
+            cursor.close()
 
     def load_path_keywords(self):
         if not self.conn: return
         cursor = self.conn.cursor()
-        cursor.execute("SELECT DISTINCT game_system, edition FROM products WHERE game_system IS NOT NULL")
-        for system, edition in cursor.fetchall():
-            nsys = self.normalize_text(system)
-            self.path_keywords[nsys] = system
-            if edition:
-                nedit = self.normalize_text(edition)
-                self.path_keywords[nedit] = system
+        try:
+            cursor.execute("SELECT DISTINCT game_system, edition FROM products WHERE game_system IS NOT NULL")
+            for system, edition in cursor.fetchall():
+                nsys = self.normalize_text(system)
+                self.path_keywords[nsys] = system
+                if edition:
+                    nedit = self.normalize_text(edition)
+                    self.path_keywords[nedit] = system
+        finally:
+            cursor.close()
 
     def load_alternate_keywords(self):
         if not self.conn: return
@@ -74,6 +81,8 @@ class Classifier:
                     self.path_keywords[nkey] = system
         except sqlite3.Error:
             pass
+        finally:
+            cursor.close()
 
     @staticmethod
     def normalize_text(text):

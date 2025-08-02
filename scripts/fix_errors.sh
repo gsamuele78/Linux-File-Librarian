@@ -21,12 +21,16 @@ fi
 echo ""
 echo "Step 1: Running cleanup script..."
 echo "--------------------------------"
-python3 src/utility/cleanup_broken_files.py
+if ! python3 src/utility/cleanup_broken_files.py; then
+    echo "[ERROR] Cleanup script failed. Continuing with other fixes..."
+fi
 
 echo ""
 echo "Step 2: Running memory optimization..."
 echo "------------------------------------"
-python3 src/utility/optimize_memory.py
+if ! python3 src/utility/optimize_memory.py; then
+    echo "[ERROR] Memory optimization script failed. Continuing with other fixes..."
+fi
 
 echo ""
 echo "Step 3: Clearing temporary files..."

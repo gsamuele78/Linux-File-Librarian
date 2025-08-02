@@ -16,20 +16,35 @@ except ModuleNotFoundError:
 
 class SearchApp(tk.Tk):
     def __init__(self, config):
-        super().__init__()
-        
-        # Load configuration settings
-        self.library_root = config['library_root']
-        self.db_path = os.path.join(self.library_root, "library_index.sqlite")
-
-        # Essential check: Ensure the database exists before building the GUI
-        if not os.path.exists(self.db_path):
-            messagebox.showerror("Error", f"Database not found at:\n{self.db_path}\n\nPlease run the librarian script first to build the library.")
-            self.destroy()
-            return
+        try:
+            super().__init__()
             
-        self.title("Library Search")
-        self.geometry("1100x700")
+            # Load configuration settings with path validation
+            raw_library_root = config['library_root']
+            # Normalize and validate the library root path to prevent path traversal
+            self.library_root = os.path.abspath(os.path.normpath(raw_library_root))
+            # Ensure the path doesn't contain traversal sequences after normalization
+            if '..' in os.path.relpath(self.library_root, os.getcwd()):
+                raise ValueError("Invalid library_root path: contains directory traversal")
+            self.db_path = os.path.join(self.library_root, "library_index.sqlite")
+
+            # Essential check: Ensure the database exists before building the GUI
+            if not os.path.exists(self.db_path):
+                messagebox.showerror("Error", f"Database not found at:\n{self.db_path}\n\nPlease run the librarian script first to build the library.")
+                self.destroy()
+                return
+                
+            self.title("Library Search")
+            self.geometry("1100x700")
+        except (KeyError, TypeError) as e:
+            messagebox.showerror("Configuration Error", f"Invalid configuration: {e}")
+            raise
+        except tk.TclError as e:
+            messagebox.showerror("GUI Error", f"Failed to initialize GUI: {e}")
+            raise
+        except Exception as e:
+            messagebox.showerror("Initialization Error", f"Failed to initialize application: {e}")
+            raise
 
         # --- Filter Frame ---
         self.filter_frame = ttk.LabelFrame(self, text="Filters")
@@ -129,8 +144,12 @@ class SearchApp(tk.Tk):
                 self.language_combo['values'] = ["-- ALL --"] + langs
                 self.language_combo.set("-- ALL --")
                 
-        except sqlite3.Error as e:
-            messagebox.showerror("Database Error", f"Could not populate filters: {e}")
+        except sqlite3.OperationalError as e:
+            messagebox.showerror("Database Error", f"Database operation failed: {e}")
+        except sqlite3.DatabaseError as e:
+            messagebox.showerror("Database Error", f"Database error: {e}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to populate filters: {e}")
 
     def perform_search(self, event=None):
         """Executes the search query against the database using all filters."""
@@ -177,8 +196,12 @@ class SearchApp(tk.Tk):
                     filename, game_sys, file_type, size_bytes, path = row
                     size_kb = f"{size_bytes / 1024:.1f}" if size_bytes else "0.0"
                     self.tree.insert("", tk.END, values=(filename, game_sys or '', file_type or '', size_kb, path))
-        except sqlite3.Error as e:
-            messagebox.showerror("Database Error", f"Search failed: {e}")
+        except sqlite3.OperationalError as e:
+            messagebox.showerror("Database Error", f"Search operation failed: {e}")
+        except sqlite3.DatabaseError as e:
+            messagebox.showerror("Database Error", f"Database error during search: {e}")
+        except Exception as e:
+            messagebox.showerror("Search Error", f"Search failed: {e}")
             
     def open_selected_file(self, event=None):
         """Opens the selected file in the treeview using the system's default application."""
@@ -202,9 +225,15 @@ class SearchApp(tk.Tk):
             else: # linux and other UNIX
                 subprocess.run(["xdg-open", file_path], check=True)
         except subprocess.CalledProcessError as e:
-            messagebox.showerror("Error", f"Could not open file (subprocess error):\n{e}")
+            messagebox.showerror("Process Error", f"Failed to open file with system application:\n{e}")
+        except FileNotFoundError as e:
+            messagebox.showerror("File Error", f"System application not found:\n{e}")
+        except PermissionError as e:
+            messagebox.showerror("Permission Error", f"Permission denied opening file:\n{e}")
+        except OSError as e:
+            messagebox.showerror("System Error", f"System error opening file:\n{e}")
         except Exception as e:
-            messagebox.showerror("Error", f"Could not open file:\n{e}")
+            messagebox.showerror("Unexpected Error", f"Could not open file:\n{e}")
 
 # Main execution block to launch the application
 if __name__ == "__main__":
@@ -227,7 +256,17 @@ if __name__ == "__main__":
     except FileNotFoundError as e:
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Fatal Error", f"A required file was not found. Please check your setup.\n\nError: {e}")
+        messagebox.showerror("Configuration Error", f"Configuration file not found. Please check your setup.\n\nError: {e}")
+        sys.exit(1)
+    except KeyError as e:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Configuration Error", f"Missing configuration key: {e}")
+        sys.exit(1)
+    except tk.TclError as e:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("GUI Error", f"Failed to initialize GUI components:\n{e}")
         sys.exit(1)
     except Exception as e:
         root = tk.Tk()

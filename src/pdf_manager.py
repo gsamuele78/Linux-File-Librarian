@@ -114,6 +114,7 @@ class PDFManager:
                             max_pages_to_check = min(doc.page_count, 10)
                             from tqdm import tqdm
                             for i in tqdm(range(max_pages_to_check), desc=f"Extracting text: {os.path.basename(file_path)}", leave=False):
+                                page = None
                                 try:
                                     page = doc.load_page(i)
                                     text = ''
@@ -133,6 +134,14 @@ class PDFManager:
                                 except (MemoryError, RuntimeError) as e:
                                     # Skip corrupted pages that cause memory issues
                                     continue
+                                finally:
+                                    # Critical: Release page object immediately
+                                    if page is not None:
+                                        try:
+                                            del page
+                                        except:
+                                            pass
+                                    gc.collect()
         except TimeoutError as e:
             msg = f"PDF processing timeout: {e}"
             self.log_error("PDF_TIMEOUT_ERROR", file_path, msg)
