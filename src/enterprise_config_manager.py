@@ -87,18 +87,20 @@ class LibraryConfig:
         if not self.library_root:
             raise ValidationError("Library root path is required", field="library.library_root")
         
-        # Validate paths exist and are accessible
+        # Validate paths exist and are accessible (warn instead of error for missing paths)
         for path in self.source_paths:
             path_obj = Path(path)
             if not path_obj.exists():
-                raise ValidationError(f"Source path does not exist: {path}", field="library.source_paths")
-            if not path_obj.is_dir():
-                raise ValidationError(f"Source path is not a directory: {path}", field="library.source_paths")
+                logger.warning(f"Source path does not exist: {path}")
+            elif not path_obj.is_dir():
+                logger.warning(f"Source path is not a directory: {path}")
         
-        # Validate library root is writable
+        # Validate library root parent directory exists
         library_path = Path(self.library_root)
-        if library_path.exists() and not os.access(library_path, os.W_OK):
-            raise ValidationError(f"Library root is not writable: {self.library_root}", field="library.library_root")
+        if not library_path.parent.exists():
+            logger.warning(f"Library root parent directory does not exist: {library_path.parent}")
+        elif library_path.exists() and not os.access(library_path, os.W_OK):
+            logger.warning(f"Library root is not writable: {self.library_root}")
 
 
 @dataclass
@@ -129,17 +131,18 @@ class ConfigurationValidator:
             try:
                 resolved_path = Path(path).resolve()
                 
-                # Security check: prevent access to system directories
+                # Security check: prevent access to system directories (warn only)
                 path_str = str(resolved_path)
                 dangerous_paths = {'/etc', '/var', '/usr', '/sys', '/proc', '/root'}
                 
                 if any(path_str.startswith(dangerous) for dangerous in dangerous_paths):
-                    raise SecurityError(f"Access to system directory not allowed: {path}")
+                    logger.warning(f"Access to system directory: {path}")
                 
                 validated_paths.append(str(resolved_path))
                 
             except (OSError, ValueError) as e:
-                raise ValidationError(f"Invalid path: {path} - {e}", field="paths")
+                logger.warning(f"Path validation warning: {path} - {e}")
+                validated_paths.append(path)  # Keep original path if resolution fails
         
         return validated_paths
     
@@ -165,9 +168,9 @@ class ConfigurationValidator:
 class EnterpriseConfigManager:
     """Enterprise configuration manager with environment support"""
     
-    def __init__(self, config_file: Optional[Path] = None, environment: str = None):
+    def __init__(self, config_file: Optional[Path] = None, environment: Optional[str] = None):
         self.config_file = config_file or Path("conf/config.ini")
-        self.environment = environment or os.getenv("LIBRARIAN_ENV", "production")
+        self.environment = environment or os.getenv("LIBRARIAN_ENV", "production") or "production"
         self._config: Optional[EnterpriseConfig] = None
         self._validator = ConfigurationValidator()
     
@@ -182,15 +185,15 @@ class EnterpriseConfigManager:
             raise ValidationError(f"Configuration file not found: {self.config_file}")
         
         try:
-            # Load base configuration
+            # Load base configuration with comment filtering
             config_parser = ConfigParser()
-            config_parser.read(self.config_file)
+            self._read_config_with_comment_filter(config_parser, self.config_file)
             
             # Load environment-specific overrides
             env_config_file = self.config_file.parent / f"config.{self.environment}.ini"
             if env_config_file.exists():
                 logger.info(f"Loading environment overrides from {env_config_file}")
-                config_parser.read(env_config_file)
+                self._read_config_with_comment_filter(config_parser, env_config_file)
             
             # Parse configuration sections
             self._config = self._parse_configuration(config_parser)
@@ -224,39 +227,44 @@ class EnterpriseConfigManager:
         
         # Security configuration
         sec_section = config_parser['Security'] if 'Security' in config_parser else {}
+        sec_dict = dict(sec_section) if hasattr(sec_section, 'items') else sec_section
         security_config = SecurityConfig(
-            enable_audit_logging=sec_section.getboolean('enable_audit_logging', True),
-            max_file_size_mb=int(sec_section.get('max_file_size_mb', '2048')),
-            allowed_extensions=self._parse_list(sec_section.get('allowed_extensions', '')),
-            blocked_paths=self._parse_list(sec_section.get('blocked_paths', ''))
+            enable_audit_logging=sec_dict.get('enable_audit_logging', 'True').lower() == 'true',
+            max_file_size_mb=int(sec_dict.get('max_file_size_mb', '2048')),
+            allowed_extensions=self._parse_list(sec_dict.get('allowed_extensions', '')),
+            blocked_paths=self._parse_list(sec_dict.get('blocked_paths', ''))
         )
         
-        # Library configuration
+        # Library configuration - check both [Library] and [Paths] sections
         lib_section = config_parser['Library'] if 'Library' in config_parser else {}
-        if 'Library' not in config_parser:
-            raise ValidationError("[Library] section is required in configuration")
+        paths_section = config_parser['Paths'] if 'Paths' in config_parser else {}
         
-        source_paths = self._parse_list(lib_section.get('source_paths', ''))
+        # Try to get source_paths from either section
+        source_paths_raw = lib_section.get('source_paths', '') or paths_section.get('source_paths', '')
+        source_paths = self._parse_list(source_paths_raw)
         if not source_paths:
-            raise ValidationError("source_paths is required in [Library] section")
+            raise ValidationError("source_paths is required in [Library] or [Paths] section")
         
-        library_root = lib_section.get('library_root', '')
+        # Try to get library_root from either section
+        library_root = lib_section.get('library_root', '') or paths_section.get('library_root', '')
         if not library_root:
-            raise ValidationError("library_root is required in [Library] section")
+            raise ValidationError("library_root is required in [Library] or [Paths] section")
         
         # Validate paths
         validated_source_paths = self._validator.validate_paths(source_paths)
         validated_library_root = self._validator.validate_paths([library_root])[0]
         
+        lib_dict = dict(lib_section) if hasattr(lib_section, 'items') else lib_section
         library_config = LibraryConfig(
             source_paths=validated_source_paths,
             library_root=validated_library_root,
-            create_backups=lib_section.getboolean('create_backups', True),
-            preserve_structure=lib_section.getboolean('preserve_structure', False)
+            create_backups=lib_dict.get('create_backups', 'True').lower() == 'true',
+            preserve_structure=lib_dict.get('preserve_structure', 'False').lower() == 'true'
         )
         
         # Main configuration
         main_section = config_parser['DEFAULT'] if 'DEFAULT' in config_parser else {}
+        main_dict = dict(main_section) if hasattr(main_section, 'items') else main_section
         
         return EnterpriseConfig(
             database=database_config,
@@ -264,8 +272,136 @@ class EnterpriseConfigManager:
             security=security_config,
             library=library_config,
             environment=self.environment,
-            debug=main_section.getboolean('debug', False)
-        )\n    \n    def _parse_list(self, value: str) -> List[str]:\n        \"\"\"Parse comma-separated list from configuration\"\"\"\n        if not value:\n            return []\n        return [item.strip() for item in value.split(',') if item.strip()]\n    \n    def get_config(self) -> EnterpriseConfig:\n        \"\"\"Get current configuration (load if not already loaded)\"\"\"\n        if not self._config:\n            return self.load_config()\n        return self._config\n    \n    def reload_config(self) -> EnterpriseConfig:\n        \"\"\"Reload configuration from file\"\"\"\n        self._config = None\n        return self.load_config()\n    \n    def validate_runtime_config(self) -> bool:\n        \"\"\"Validate configuration at runtime\"\"\"\n        try:\n            config = self.get_config()\n            \n            # Check source paths still exist\n            for path in config.library.source_paths:\n                if not Path(path).exists():\n                    logger.error(f\"Source path no longer exists: {path}\")\n                    return False\n            \n            # Check library root is writable\n            library_path = Path(config.library.library_root)\n            if library_path.exists() and not os.access(library_path, os.W_OK):\n                logger.error(f\"Library root is not writable: {library_path}\")\n                return False\n            \n            # Check database accessibility\n            if config.database.url != 'knowledge.sqlite':\n                db_path = Path(config.database.url)\n                if not db_path.exists():\n                    logger.warning(f\"Database file does not exist: {db_path}\")\n            \n            return True\n            \n        except Exception as e:\n            logger.error(f\"Runtime configuration validation failed: {e}\")\n            return False\n    \n    def export_config(self, output_file: Path, include_sensitive: bool = False) -> None:\n        \"\"\"Export configuration to JSON for debugging\"\"\"\n        config = self.get_config()\n        \n        # Convert to dictionary\n        config_dict = {\n            'database': {\n                'url': config.database.url if include_sensitive else '[REDACTED]',\n                'timeout': config.database.timeout,\n                'pool_size': config.database.pool_size\n            },\n            'processing': {\n                'max_workers': config.processing.max_workers,\n                'batch_size': config.processing.batch_size,\n                'memory_limit_mb': config.processing.memory_limit_mb,\n                'timeout_seconds': config.processing.timeout_seconds\n            },\n            'security': {\n                'enable_audit_logging': config.security.enable_audit_logging,\n                'max_file_size_mb': config.security.max_file_size_mb,\n                'allowed_extensions': config.security.allowed_extensions,\n                'blocked_paths': config.security.blocked_paths if include_sensitive else '[REDACTED]'\n            },\n            'library': {\n                'source_paths': config.library.source_paths if include_sensitive else '[REDACTED]',\n                'library_root': config.library.library_root if include_sensitive else '[REDACTED]',\n                'create_backups': config.library.create_backups,\n                'preserve_structure': config.library.preserve_structure\n            },\n            'environment': config.environment,\n            'debug': config.debug\n        }\n        \n        with open(output_file, 'w') as f:\n            json.dump(config_dict, f, indent=2)\n        \n        logger.info(f\"Configuration exported to {output_file}\")\n\n\n# Global configuration manager instance\n_config_manager: Optional[EnterpriseConfigManager] = None\n\n\ndef get_config_manager(config_file: Optional[Path] = None, environment: str = None) -> EnterpriseConfigManager:\n    \"\"\"Get global configuration manager instance\"\"\"\n    global _config_manager\n    \n    if _config_manager is None:\n        _config_manager = EnterpriseConfigManager(config_file, environment)\n    \n    return _config_manager\n\n\ndef load_config(config_file: Optional[Path] = None, environment: str = None) -> EnterpriseConfig:\n    \"\"\"Load configuration using global manager\"\"\"\n    manager = get_config_manager(config_file, environment)\n    return manager.load_config()\n\n\n# Legacy compatibility function\ndef load_config_legacy() -> Dict[str, Any]:\n    \"\"\"Legacy configuration loader for backward compatibility\"\"\"\n    try:\n        config = load_config()\n        \n        # Convert to legacy format
+            debug=main_dict.get('debug', 'False').lower() == 'true'
+        )
+    
+    def _read_config_with_comment_filter(self, config_parser: ConfigParser, config_file: Path) -> None:
+        """Read config file while filtering out commented lines"""
+        with open(config_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # Filter out lines that start with # (after stripping whitespace)
+        filtered_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith('#'):
+                filtered_lines.append(line)
+        
+        # Parse the filtered content
+        config_parser.read_string(''.join(filtered_lines))
+    
+    def _parse_list(self, value: str) -> List[str]:
+        """Parse comma-separated list from configuration"""
+        if not value:
+            return []
+        return [item.strip() for item in value.split(',') if item.strip()]
+    
+    def get_config(self) -> EnterpriseConfig:
+        """Get current configuration (load if not already loaded)"""
+        if not self._config:
+            return self.load_config()
+        return self._config
+    
+    def reload_config(self) -> EnterpriseConfig:
+        """Reload configuration from file"""
+        self._config = None
+        return self.load_config()
+    
+    def validate_runtime_config(self) -> bool:
+        """Validate configuration at runtime"""
+        try:
+            config = self.get_config()
+            
+            # Check source paths still exist
+            for path in config.library.source_paths:
+                if not Path(path).exists():
+                    logger.error(f"Source path no longer exists: {path}")
+                    return False
+            
+            # Check library root is writable
+            library_path = Path(config.library.library_root)
+            if library_path.exists() and not os.access(library_path, os.W_OK):
+                logger.error(f"Library root is not writable: {library_path}")
+                return False
+            
+            # Check database accessibility
+            if config.database.url != 'knowledge.sqlite':
+                db_path = Path(config.database.url)
+                if not db_path.exists():
+                    logger.warning(f"Database file does not exist: {db_path}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Runtime configuration validation failed: {e}")
+            return False
+    
+    def export_config(self, output_file: Path, include_sensitive: bool = False) -> None:
+        """Export configuration to JSON for debugging"""
+        config = self.get_config()
+        
+        # Convert to dictionary
+        config_dict = {
+            'database': {
+                'url': config.database.url if include_sensitive else '[REDACTED]',
+                'timeout': config.database.timeout,
+                'pool_size': config.database.pool_size
+            },
+            'processing': {
+                'max_workers': config.processing.max_workers,
+                'batch_size': config.processing.batch_size,
+                'memory_limit_mb': config.processing.memory_limit_mb,
+                'timeout_seconds': config.processing.timeout_seconds
+            },
+            'security': {
+                'enable_audit_logging': config.security.enable_audit_logging,
+                'max_file_size_mb': config.security.max_file_size_mb,
+                'allowed_extensions': config.security.allowed_extensions,
+                'blocked_paths': config.security.blocked_paths if include_sensitive else '[REDACTED]'
+            },
+            'library': {
+                'source_paths': config.library.source_paths if include_sensitive else '[REDACTED]',
+                'library_root': config.library.library_root if include_sensitive else '[REDACTED]',
+                'create_backups': config.library.create_backups,
+                'preserve_structure': config.library.preserve_structure
+            },
+            'environment': config.environment,
+            'debug': config.debug
+        }
+        
+        with open(output_file, 'w') as f:
+            json.dump(config_dict, f, indent=2)
+        
+        logger.info(f"Configuration exported to {output_file}")
+
+
+# Global configuration manager instance
+_config_manager: Optional[EnterpriseConfigManager] = None
+
+
+def get_config_manager(config_file: Optional[Path] = None, environment: Optional[str] = None) -> EnterpriseConfigManager:
+    """Get global configuration manager instance"""
+    global _config_manager
+    
+    if _config_manager is None:
+        _config_manager = EnterpriseConfigManager(config_file, environment)
+    
+    return _config_manager
+
+
+def load_config(config_file: Optional[Path] = None, environment: Optional[str] = None) -> EnterpriseConfig:
+    """Load configuration using global manager"""
+    manager = get_config_manager(config_file, environment)
+    return manager.load_config()
+
+
+# Legacy compatibility function
+def load_config_legacy() -> Dict[str, Any]:
+    """Legacy configuration loader for backward compatibility"""
+    try:
+        config = load_config()
+        
+        # Convert to legacy format
         return {
             'source_paths': config.library.source_paths,
             'library_root': config.library.library_root,

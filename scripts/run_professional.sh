@@ -94,15 +94,26 @@ validate_configuration() {
         exit 1
     fi
     
-    # Check if source paths are configured
-    if grep -q "/path/to/" "$config_file"; then
+    # Check if source paths are configured (look for uncommented source_paths)
+    if ! grep -q "^source_paths = " "$config_file"; then
         log_error "Please configure source_paths in $config_file"
         exit 1
     fi
     
-    # Check if library root is configured
-    if grep -q "/path/to/" "$config_file"; then
+    # Check if library root is configured (look for uncommented library_root)
+    if ! grep -q "^library_root = " "$config_file"; then
         log_error "Please configure library_root in $config_file"
+        exit 1
+    fi
+    
+    # Check if paths contain placeholder values (only uncommented lines)
+    if grep -q "^source_paths = /path/to/" "$config_file"; then
+        log_error "Please update source_paths with actual paths in $config_file"
+        exit 1
+    fi
+    
+    if grep -q "^library_root = /path/to/" "$config_file"; then
+        log_error "Please update library_root with actual path in $config_file"
         exit 1
     fi
     

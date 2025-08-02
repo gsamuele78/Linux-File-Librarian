@@ -24,8 +24,20 @@ def load_config():
         raise FileNotFoundError(f"Configuration file not found at: {config_path}")
 
     try:
-        config.read(config_path)
-    except configparser.Error as e:
+        # Read and filter out commented lines
+        with open(config_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # Filter out lines that start with # (after stripping whitespace)
+        filtered_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith('#'):
+                filtered_lines.append(line)
+        
+        # Parse the filtered content
+        config.read_string(''.join(filtered_lines))
+    except (configparser.Error, IOError) as e:
         raise ValueError(f"Error parsing configuration file: {e}")
 
     # --- Section [Paths] ---
@@ -33,14 +45,9 @@ def load_config():
     library_root = ""
     if config.has_section('Paths'):
         source_paths_raw = config.get('Paths', 'source_paths', fallback='').strip()
-        # Support both comma and semicolon as separators for flexibility
-        if ',' in source_paths_raw:
-            sep = ','
-        elif ';' in source_paths_raw:
-            sep = ';'
-        else:
-            sep = ','  # fallback to comma if neither found
-        source_paths = [p.strip() for p in source_paths_raw.split(sep) if p.strip()]
+        # Support multiple source paths separated by comma
+        if source_paths_raw:
+            source_paths = [p.strip() for p in source_paths_raw.split(',') if p.strip()]
         library_root = config.get('Paths', 'library_root', fallback='').strip()
     else:
         raise ValueError("Missing required [Paths] section in config.ini")
@@ -60,6 +67,7 @@ def load_config():
     if config.has_section('KnowledgeBaseURLs'):
         for key, url in config.items('KnowledgeBaseURLs'):
             url = url.strip()
+            # Skip empty URLs or commented URLs (already filtered but double-check)
             if url and not url.startswith('#'):
                 # Detect language from key suffix or default to English
                 if key.endswith('_it'):

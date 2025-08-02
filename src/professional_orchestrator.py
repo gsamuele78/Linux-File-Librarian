@@ -13,6 +13,7 @@ Implements enterprise software engineering best practices:
 """
 
 import asyncio
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +29,7 @@ from .enterprise_error_handling import (
     EnterpriseException,
     ValidationError,
     ResourceError,
+    SecurityError,
     RetryStrategy,
     safe_execute
 )
@@ -209,8 +211,8 @@ class FileValidationStage(ProcessingStage):
                 logger.warning(f"File too large (>2GB): {file_path}")
                 return None
             
-            # Accessibility check
-            if not file_path.is_readable():
+            # Accessibility check using os.access
+            if not os.access(file_path, os.R_OK):
                 logger.warning(f"File not readable: {file_path}")
                 return None
             
@@ -327,8 +329,8 @@ class FileClassificationStage(ProcessingStage):
             
         except Exception as e:
             safe_path = str(file_path)[:100]
-        safe_error = str(e)[:100]
-        logger.error(f"Classification error for {safe_path}: {safe_error}")
+            safe_error = str(e)[:100]
+            logger.error(f"Classification error for {safe_path}: {safe_error}")
             file_info.update({
                 'status': ProcessingStatus.FAILED,
                 'game_system': 'Unknown',
