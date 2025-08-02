@@ -7,6 +7,7 @@ from concurrent.futures import as_completed, ThreadPoolExecutor
 from functools import partial
 from tqdm import tqdm
 import sqlite3
+from src.enhanced_copy_utils import create_enhanced_destination_path, copy_file_enhanced
 
 def get_file_hash_standalone(path, block_size=65536):
     import hashlib
@@ -44,11 +45,88 @@ def get_pdf_details_standalone(path):
 def analyze_row(row, knowledge_db_path, isbn_cache, pdf_validation):
     import os
     import gc
+    import mimetypes
+    from src.classifier import Classifier
     
     # This function is called from a ThreadPoolExecutor, so it needs to be robust.
-    # The outer try-except block in classify_and_analyze handles exceptions from here.
     path = row.get('path')
     name = row.get('name')
+    
+    if not path or not os.path.exists(path):
+        return None
+    
+    try:
+        # Initialize classifier
+        classifier = Classifier(knowledge_db_path)
+        
+        # Get mime type
+        mime_type, _ = mimetypes.guess_type(path)
+        if not mime_type:
+            mime_type = 'application/octet-stream'
+        
+        # Get file hash
+        file_hash = get_file_hash_standalone(path)
+        
+        # Get PDF validation data if available
+        pdf_data = pdf_validation.get(path, (False, False, None, None, None))
+        is_pdf_valid, has_ocr, pdf_version, pdf_creator, pdf_producer = pdf_data
+        
+        # Classify file using the correct method
+        game_system, edition, category = classifier.classify(name, path, mime_type)
+        
+        # Use ISBN enricher as additional resource if primary classification is generic
+        if (game_system in ['Miscellaneous', None] or category in ['Miscellaneous', None]) and \
+           mime_type.startswith('application/pdf'):
+            try:
+                from src.isbn_enricher import enrich_file_with_isbn_metadata
+                
+                # Check cache first
+                if path in isbn_cache:
+                    isbn_results = isbn_cache[path]
+                else:
+                    isbn_results = enrich_file_with_isbn_metadata(path)
+                    isbn_cache[path] = isbn_results
+                
+                if isbn_results:
+                    meta = isbn_results[0]['metadata']
+                    title = meta.get('title', '')
+                    
+                    # Check if ISBN metadata provides better classification
+                    if title:
+                        ntitle = classifier.normalize_text(title)
+                        if ntitle in classifier.product_cache:
+                            game_system, edition, category = classifier.product_cache[ntitle]
+                        else:
+                            # Use ISBN metadata for generic book classification
+                            category = 'Books'
+                            game_system = meta.get('publisher', 'Unknown Publisher')
+                            
+            except Exception as e:
+                pass  # Continue with original classification if ISBN enrichment fails
+        
+        # Clean up classifier
+        classifier.close()
+        del classifier
+        gc.collect()
+        
+        return {
+            'path': path,
+            'mime_type': mime_type,
+            'hash': file_hash,
+            'is_pdf_valid': is_pdf_valid,
+            'has_ocr': has_ocr,
+            'pdf_version': pdf_version,
+            'pdf_creator': pdf_creator,
+            'pdf_producer': pdf_producer,
+            'game_system': game_system,
+            'edition': edition,
+            'category': category,
+            'language': 'en'  # Default language
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] Analysis failed for {path}: {e}")
+        return None
     
 
 class LibraryBuilder:

@@ -1,0 +1,42 @@
+# Enterprise Dependencies for Linux File Librarian
+# Additional packages for enterprise features
+
+# Performance monitoring
+psutil>=5.9.0
+
+# Async processing
+aiofiles>=23.0.0
+asyncio-throttle>=1.0.2
+
+# Advanced data structures
+sortedcontainers>=2.4.0
+
+# Memory profiling
+memory-profiler>=0.60.0
+pympler>=0.9
+
+# System monitoring
+py-cpuinfo>=9.0.0
+
+# JSON processing optimization
+orjson>=3.8.0
+
+# Caching
+cachetools>=5.3.0
+
+# Progress bars for enterprise UI
+tqdm>=4.65.0
+
+# Configuration validation
+pydantic>=1.10.0
+
+# Structured logging
+structlog>=23.0.0
+
+# Type checking (development)
+mypy>=1.0.0
+
+# Testing framework
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-benchmark>=4.0.0

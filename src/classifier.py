@@ -5,7 +5,22 @@ import re
 import unicodedata
 import gc
 from pathlib import Path
-from rapidfuzz import fuzz
+
+try:
+    from rapidfuzz import fuzz
+    HAS_RAPIDFUZZ = True
+except ImportError:
+    HAS_RAPIDFUZZ = False
+    # Fallback fuzzy matching using difflib
+    import difflib
+    
+    class fuzz:
+        @staticmethod
+        def partial_ratio(a, b):
+            """Simple fuzzy matching fallback"""
+            if not a or not b:
+                return 0
+            return int(difflib.SequenceMatcher(None, a, b).ratio() * 100)
 
 class Classifier:
     """

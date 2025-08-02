@@ -23,8 +23,17 @@ echo "[INFO] Setting up memory constraints..."
 cd "$PROJECT_ROOT"
 python3 src/utility/setup_memory_constraints.py
 
-echo "[INFO] Running the librarian script with memory optimization..."
-PYTHONPATH="$PROJECT_ROOT" python3 src/librarian.py | tee librarian_run.log || {
-  echo "[ERROR] librarian.py failed! See librarian_run.log for details."
-  exit 1
-}
+# Check for enterprise mode
+if [ -f "$PROJECT_ROOT/src/integration_adapter.py" ] && [ "${LIBRARIAN_ENTERPRISE_MODE:-false}" = "true" ]; then
+    echo "[INFO] Running librarian with enterprise enhancements..."
+    PYTHONPATH="$PROJECT_ROOT" python3 -c "from src.integration_adapter import integrate_with_existing_scripts; import sys; sys.exit(integrate_with_existing_scripts())" | tee librarian_run.log || {
+        echo "[ERROR] Enterprise librarian failed! See librarian_run.log for details."
+        exit 1
+    }
+else
+    echo "[INFO] Running the librarian script with memory optimization..."
+    PYTHONPATH="$PROJECT_ROOT" python3 src/librarian.py | tee librarian_run.log || {
+        echo "[ERROR] librarian.py failed! See librarian_run.log for details."
+        exit 1
+    }
+fi
