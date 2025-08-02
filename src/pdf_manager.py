@@ -103,7 +103,9 @@ class EnterprisePDFManager:
                 return True, output
             return False, output
         except (TimeoutExpired, CalledProcessError, OSError) as e:
-            self.logger.warning(f"PDF validation failed for {file_path}: {e}")
+            safe_path = str(file_path)[:100]
+            safe_error = str(e)[:100]
+            self.logger.warning(f"PDF validation failed for {safe_path}: {safe_error}")
             return False, str(e)
 
     def get_pdf_details(self, file_path):
@@ -184,7 +186,7 @@ class EnterprisePDFManager:
                                         except (AttributeError, NameError):
                                             # Expected when page object is already cleaned up
                                             pass
-                                    gc.collect()
+                                    # Removed gc.collect() for better performance
         except TimeoutError as e:
             msg = f"PDF processing timeout: {e}"
             self.log_error("PDF_TIMEOUT_ERROR", file_path, msg)
@@ -213,14 +215,25 @@ class EnterprisePDFManager:
         """Enterprise PDF repair using multiple strategies with comprehensive reporting"""
         import time
         start_time = time.perf_counter()
-        input_size = Path(input_path).stat().st_size if Path(input_path).exists() else 0
+        # Validate and sanitize input path
+        safe_input_path = Path(input_path).resolve()
+        if not str(safe_input_path).startswith('/tmp/') and not str(safe_input_path).startswith('/var/tmp/'):
+            if '..' in str(safe_input_path):
+                raise ValueError("Invalid input path: contains directory traversal")
+        input_size = safe_input_path.stat().st_size if safe_input_path.exists() else 0
         
         # Clean output path
-        if Path(output_path).exists():
+        # Validate and sanitize output path
+        safe_output_path = Path(output_path).resolve()
+        if '..' in str(safe_output_path):
+            raise ValueError("Invalid output path: contains directory traversal")
+        if safe_output_path.exists():
             try:
-                Path(output_path).unlink()
+                safe_output_path.unlink()
             except (OSError, IOError) as e:
-                self.logger.error(f"Error removing existing output file {output_path}: {e}")
+                safe_path = str(safe_output_path)[:100]
+                safe_error = str(e)[:100]
+                self.logger.error(f"Error removing existing output file {safe_path}: {safe_error}")
         
         # Try repair strategies in order of effectiveness
         strategies = [
@@ -233,21 +246,26 @@ class EnterprisePDFManager:
         
         for strategy in strategies:
             try:
-                if self._repair_strategies[strategy](input_path, output_path):
-                    output_size = Path(output_path).stat().st_size if Path(output_path).exists() else 0
+                if self._repair_strategies[strategy](str(safe_input_path), str(safe_output_path)):
+                    output_size = safe_output_path.stat().st_size if safe_output_path.exists() else 0
                     repair_time = time.perf_counter() - start_time
                     
                     return PDFRepairResult(
                         success=True,
                         strategy_used=strategy,
-                        output_path=output_path,
+                        output_path=str(safe_output_path),
                         error_message=None,
                         file_size_before=input_size,
                         file_size_after=output_size,
                         repair_time_seconds=repair_time
                     )
+            except (OSError, IOError, ValueError) as e:
+                safe_error = str(e)[:100]
+                self.logger.warning(f"Repair strategy {strategy.value} failed: {safe_error}")
+                continue
             except Exception as e:
-                self.logger.warning(f"Repair strategy {strategy.value} failed: {e}")
+                safe_error = str(e)[:100]
+                self.logger.error(f"Unexpected error in repair strategy {strategy.value}: {safe_error}")
                 continue
         
         # All strategies failed
@@ -261,18 +279,26 @@ class EnterprisePDFManager:
             file_size_after=0,
             repair_time_seconds=repair_time
         )
-    def _run_repair_command(self, cmd: list, input_path: str, timeout: int = 60) -> bool:
+    def _run_repair_command(self, cmd: list, input_path: str, timeout: Optional[int] = None) -> bool:
         """Execute repair command with enterprise error handling"""
+        # Use configurable timeout
+        actual_timeout = timeout or self.timeout_seconds
         try:
-            result = run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
-            self.logger.info(f"Repair command succeeded: {' '.join(cmd)}")
+            result = run(cmd, capture_output=True, text=True, timeout=actual_timeout, check=True)
+            safe_cmd = ' '.join(str(c)[:50] for c in cmd[:3])
+            self.logger.info(f"Repair command succeeded: {safe_cmd}")
             return True
         except TimeoutExpired:
-            self.logger.warning(f"Repair command timed out: {' '.join(cmd)}")
+            safe_cmd = ' '.join(str(c)[:50] for c in cmd[:3])
+            self.logger.warning(f"Repair command timed out: {safe_cmd}")
         except CalledProcessError as e:
-            self.logger.warning(f"Repair command failed: {' '.join(cmd)}, error: {e}")
+            safe_cmd = ' '.join(str(c)[:50] for c in cmd[:3])
+            safe_error = str(e)[:100]
+            self.logger.warning(f"Repair command failed: {safe_cmd}, error: {safe_error}")
         except OSError as e:
-            self.logger.error(f"Repair tool not found: {cmd[0]}, error: {e}")
+            safe_tool = str(cmd[0])[:50] if cmd else 'unknown'
+            safe_error = str(e)[:100]
+            self.logger.error(f"Repair tool not found: {safe_tool}, error: {safe_error}")
         return False
     
     def _qpdf_repair(self, input_path: str, output_path: str) -> bool:
@@ -304,12 +330,15 @@ class EnterprisePDFManager:
                 with fitz.open(input_path) as doc:
                     if doc.page_count > 0:
                         doc.save(output_path, garbage=4, deflate=True, clean=True)
-                        self.logger.info(f"PDF rebuilt with PyMuPDF: {input_path}")
+                        safe_path = str(input_path)[:100]
+                        self.logger.info(f"PDF rebuilt with PyMuPDF: {safe_path}")
                         return Path(output_path).exists()
         except (MemoryError, RuntimeError) as e:
-            self.logger.error(f"PyMuPDF rebuild failed due to memory/runtime error: {e}")
+            safe_error = str(e)[:100]
+            self.logger.error(f"PyMuPDF rebuild failed due to memory/runtime error: {safe_error}")
         except Exception as e:
-            self.logger.warning(f"PyMuPDF rebuild failed: {e}")
+            safe_error = str(e)[:100]
+            self.logger.warning(f"PyMuPDF rebuild failed: {safe_error}")
         return False
     
     # Legacy method for backward compatibility
@@ -358,7 +387,9 @@ class PDFAnalyzer:
                 
                 # Analyze first few pages for issues
                 issues = []
-                for i in range(min(3, doc.page_count)):
+                # Analyze only first page for better performance
+                pages_to_check = min(1, doc.page_count)
+                for i in range(pages_to_check):
                     try:
                         page = doc.load_page(i)
                         with suppress(AttributeError):
@@ -378,13 +409,16 @@ class PDFAnalyzer:
                 score = 100.0
                 if analysis['is_encrypted']:
                     score -= 20
-                if len(issues) > 0:
+                if issues:
                     score -= min(30, len(issues) * 10)
                 if analysis['file_size_mb'] > 100:
                     score -= 10
                 
                 analysis['health_score'] = max(0.0, score)
                 
+        except (OSError, IOError) as e:
+            analysis['issues'].append(f"File access error: {str(e)[:100]}")
+            analysis['health_score'] = 0.0
         except Exception as e:
             analysis['issues'].append(f"Analysis failed: {str(e)[:100]}")
             analysis['health_score'] = 0.0
