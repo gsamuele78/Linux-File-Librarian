@@ -288,7 +288,9 @@ class ErrorHandler:
                     logger.info(f"Recovery successful with {strategy.__class__.__name__}")
                     return result
             except Exception as recovery_error:
-                logger.error(f"Recovery strategy {strategy.__class__.__name__} failed: {recovery_error}")
+                safe_strategy = str(strategy.__class__.__name__)[:50]
+                safe_error = str(recovery_error)[:100]
+                logger.error(f"Recovery strategy {safe_strategy} failed: {safe_error}")
         
         # No recovery possible
         logger.error(f"No recovery strategy succeeded for error: {error}")

@@ -6,6 +6,7 @@ This script configures the system for optimal memory usage during processing.
 
 import os
 import gc
+from subprocess import run
 import psutil
 import sys
 
@@ -67,16 +68,18 @@ def setup_memory_constraints():
     print("\nAttempting to clear system caches...")
     try:
         # This requires sudo, so it might fail
-        os.system('sync && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null')
+        run(['/bin/sync'], check=False)
+        with open('/proc/sys/vm/drop_caches', 'w') as f:
+            f.write('1')
         print("System caches cleared")
-    except:
+    except (OSError, PermissionError, Exception):
         print("Could not clear system caches (requires sudo)")
     
     # Set process priority to be nice to other processes
     try:
         os.nice(10)  # Lower priority
         print("Process priority lowered")
-    except:
+    except (OSError, PermissionError):
         print("Could not lower process priority")
     
     # Final memory check

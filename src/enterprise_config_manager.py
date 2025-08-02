@@ -131,7 +131,7 @@ class ConfigurationValidator:
                 
                 # Security check: prevent access to system directories
                 path_str = str(resolved_path)
-                dangerous_paths = ['/etc', '/var', '/usr', '/sys', '/proc', '/root']
+                dangerous_paths = {'/etc', '/var', '/usr', '/sys', '/proc', '/root'}
                 
                 if any(path_str.startswith(dangerous) for dangerous in dangerous_paths):
                     raise SecurityError(f"Access to system directory not allowed: {path}")

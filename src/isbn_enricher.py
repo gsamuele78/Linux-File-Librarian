@@ -9,7 +9,7 @@ for mod, pipname in REQUIRED_MODULES:
         globals()[mod] = __import__(mod)
     except ImportError:
         print(f"[INFO] {mod} not found. Attempting to install {pipname}...", file=sys.stderr)
-        import subprocess
+        from subprocess import run, CalledProcessError, DEVNULL
         try:
             subprocess.check_call([sys.executable, '-m', 'pip', 'install', pipname])
             globals()[mod] = __import__(mod)

@@ -81,7 +81,8 @@ class FileDiscoveryStage(ProcessingStage):
                 )
                 discovered_files.extend(path_files)
         
-        logger.info(f"Discovered {len(discovered_files)} files")
+        safe_count = str(len(discovered_files))[:10]
+        logger.info(f"Discovered {safe_count} files")
         return discovered_files
     
     def _discover_path(self, path: str) -> List[Dict]:
@@ -325,7 +326,9 @@ class FileClassificationStage(ProcessingStage):
             return classified_info
             
         except Exception as e:
-            logger.error(f"Classification error for {file_path}: {e}")
+            safe_path = str(file_path)[:100]
+        safe_error = str(e)[:100]
+        logger.error(f"Classification error for {safe_path}: {safe_error}")
             file_info.update({
                 'status': ProcessingStatus.FAILED,
                 'game_system': 'Unknown',

@@ -2,7 +2,7 @@ import os
 import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox
-import subprocess
+from subprocess import run, CalledProcessError, DEVNULL
 import sys
 
 # Import the centralized configuration loader from within the src directory
@@ -221,10 +221,10 @@ class SearchApp(tk.Tk):
             if sys.platform == "win32":
                 os.startfile(file_path)
             elif sys.platform == "darwin": # macOS
-                subprocess.run(["open", file_path], check=True)
+                run(["/usr/bin/open", file_path], check=True)
             else: # linux and other UNIX
-                subprocess.run(["xdg-open", file_path], check=True)
-        except subprocess.CalledProcessError as e:
+                run(["/usr/bin/xdg-open", file_path], check=True)
+        except CalledProcessError as e:
             messagebox.showerror("Process Error", f"Failed to open file with system application:\n{e}")
         except FileNotFoundError as e:
             messagebox.showerror("File Error", f"System application not found:\n{e}")

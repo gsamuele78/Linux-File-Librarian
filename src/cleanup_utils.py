@@ -30,7 +30,7 @@ def cleanup_temp_files():
                 os.remove(temp_file)
                 print(f"[CLEANUP] Removed: {temp_file}")
                 cleaned_count += 1
-            except Exception as e:
+            except (OSError, PermissionError) as e:
                 print(f"[CLEANUP] Could not remove {temp_file}: {e}")
     
     # Clean temp patterns
@@ -41,7 +41,7 @@ def cleanup_temp_files():
                     os.remove(file_path)
                     print(f"[CLEANUP] Removed: {file_path}")
                     cleaned_count += 1
-            except Exception as e:
+            except (OSError, PermissionError) as e:
                 print(f"[CLEANUP] Could not remove {file_path}: {e}")
     
     if cleaned_count > 0:
