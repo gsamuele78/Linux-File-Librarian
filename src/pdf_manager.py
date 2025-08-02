@@ -127,7 +127,6 @@ class EnterprisePDFManager:
             msg = f"Skipping AppleDouble resource fork: {file_path}"
             print(f"  [Info] {msg}", file=sys.stderr)
             self.log_error("SKIPPED_APPLEDOUBLE", file_path, msg)
-            return False, False, pdf_version, pdf_creator, pdf_producer
         try:
             with open(file_path, "rb") as f:
                 header = f.read(1024)
@@ -215,18 +214,25 @@ class EnterprisePDFManager:
         """Enterprise PDF repair using multiple strategies with comprehensive reporting"""
         import time
         start_time = time.perf_counter()
-        # Validate and sanitize input path
+        # Validate and sanitize input path - Fix CWE-22 Path Traversal
         safe_input_path = Path(input_path).resolve()
-        if not str(safe_input_path).startswith('/tmp/') and not str(safe_input_path).startswith('/var/tmp/'):
-            if '..' in str(safe_input_path):
-                raise ValueError("Invalid input path: contains directory traversal")
+        # Prevent directory traversal attacks
+        if '..' in input_path or '..' in str(safe_input_path):
+            raise ValueError("Invalid input path: contains directory traversal")
+        # Ensure path is within allowed directories
+        allowed_dirs = ['/tmp/', '/var/tmp/', os.getcwd()]
+        if not any(str(safe_input_path).startswith(allowed_dir) for allowed_dir in allowed_dirs):
+            raise ValueError("Input path not in allowed directories")
         input_size = safe_input_path.stat().st_size if safe_input_path.exists() else 0
         
-        # Clean output path
-        # Validate and sanitize output path
+        # Validate and sanitize output path - Fix CWE-22 Path Traversal
         safe_output_path = Path(output_path).resolve()
-        if '..' in str(safe_output_path):
+        # Prevent directory traversal attacks
+        if '..' in output_path or '..' in str(safe_output_path):
             raise ValueError("Invalid output path: contains directory traversal")
+        # Ensure output path is within allowed directories
+        if not any(str(safe_output_path).startswith(allowed_dir) for allowed_dir in allowed_dirs):
+            raise ValueError("Output path not in allowed directories")
         if safe_output_path.exists():
             try:
                 safe_output_path.unlink()

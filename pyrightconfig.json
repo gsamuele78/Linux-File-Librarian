@@ -1,0 +1,6 @@
+{
+    "reportCallIssue": "none",
+    "reportGeneralTypeIssues": "error",
+    "reportMissingImports": "error",
+    "reportMissingTypeStubs": "none"
+}
