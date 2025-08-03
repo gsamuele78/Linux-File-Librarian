@@ -77,7 +77,7 @@ set_permissions() {
     find scripts/ -name "*.sh" -type f -exec chmod +x {} \;
     
     # Verify permissions were set
-    if [ ! -x "scripts/run_librarian.sh" ]; then
+    if [ ! -x "scripts/run_professional.sh" ]; then
         echo "[ERROR] Failed to set execute permissions"
         exit 1
     fi
@@ -120,8 +120,8 @@ main() {
     echo "Next steps:"
     echo "1. Edit 'conf/config.ini' to configure your source and destination paths"
     echo "2. (Optional) Run './scripts/build_knowledgebase.sh' to build the TTRPG knowledge base"
-    echo "3. Run './scripts/run_librarian.sh' to build your library"
-    echo "4. Run './scripts/run_search_gui.sh' to search your library"
+    echo "3. Run './scripts/run_professional.sh' to build your library"
+    echo "4. Run './scripts/run_enterprise_search.sh' to search your library"
     echo ""
     echo "For help, see README.md or check the logs in librarian_run.log"
 }

@@ -7,6 +7,7 @@ A robust, modular file management system for sysadmins, built with a "system eng
 - **Non-Destructive:** Your original files are never touched or deleted. The system only copies the selected files to a new location.
 - **Intelligent Categorization:** Uses a multi-tiered approach (TTRPG knowledge base, folder name analysis, file type) to logically sort every file.
 - **Robust & Transparent:** Handles common errors (like corrupted files or broken web links) gracefully and provides clear feedback.
+- **Clean Logging:** Automatically cleans old log files at startup to prevent disk space issues and provide fresh logs for each run.
 
 ## Installation (Debian 12 / Ubuntu)
 
@@ -33,6 +34,8 @@ A robust, modular file management system for sysadmins, built with a "system eng
 
 ## Usage Workflow
 
+**Note:** All scripts automatically clean old log files at startup to ensure fresh logs and prevent disk space issues.
+
 1.  **(Optional but Recommended) Build the TTRPG Knowledge Base:**
     If you have tabletop RPG files, run this first. It scrapes the web for product data to enable high-accuracy classification. This step can be run periodically to get updates.
     ```bash
@@ -40,13 +43,20 @@ A robust, modular file management system for sysadmins, built with a "system eng
     ```
 
 2.  **Build or Update Your Library:**
-    This runs the main categorization, deduplication, and copying process. It can be run repeatedly.
+    This runs the main categorization, deduplication, and copying process with enterprise-grade performance monitoring. It can be run repeatedly.
     ```bash
-    ./scripts/run_librarian.sh
+    ./scripts/run_professional.sh
     ```
 
 3.  **Search the Library:**
-    Launch the graphical search tool to browse and filter your new library.
+    Launch the enterprise search GUI to browse and filter your new library.
     ```bash
-    ./scripts/run_search_gui.sh
+    ./scripts/run_enterprise_search.sh
     ```
+
+## Manual Log Cleanup
+
+If you need to manually clean log files without running the main scripts:
+```bash
+./scripts/cleanup_logs.sh
+```

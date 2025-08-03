@@ -309,6 +309,11 @@ main() {
     # Change to project directory
     cd "$PROJECT_ROOT"
     
+    # Clean all log files first
+    if [ -f "scripts/cleanup_logs.sh" ]; then
+        bash scripts/cleanup_logs.sh
+    fi
+    
     # System checks
     check_system_requirements
     

@@ -215,7 +215,7 @@ verify_installation() {
     fi
     
     # Check scripts permissions
-    local scripts=("run_librarian.sh" "run_search_gui.sh" "build_knowledgebase.sh")
+    local scripts=("run_professional.sh" "run_enterprise_search.sh" "build_knowledgebase.sh")
     for script in "${scripts[@]}"; do
         local script_path="$PROJECT_ROOT/scripts/$script"
         if [ -f "$script_path" ] && [ ! -x "$script_path" ]; then
@@ -287,8 +287,8 @@ generate_report() {
         echo "=== Next Steps ==="
         echo "1. Edit configuration: $PROJECT_ROOT/conf/config.ini"
         echo "2. Build knowledge base: $PROJECT_ROOT/scripts/build_knowledgebase.sh"
-        echo "3. Run librarian: $PROJECT_ROOT/scripts/run_librarian.sh"
-        echo "4. Launch search GUI: $PROJECT_ROOT/scripts/run_search_gui.sh"
+        echo "3. Run librarian: $PROJECT_ROOT/scripts/run_professional.sh"
+        echo "4. Launch search GUI: $PROJECT_ROOT/scripts/run_enterprise_search.sh"
         echo ""
         
         if [ -n "${BACKUP_DIR:-}" ]; then
@@ -361,10 +361,10 @@ main() {
     echo "   $PROJECT_ROOT/scripts/build_knowledgebase.sh"
     echo ""
     echo "3. Run the file librarian:"
-    echo "   $PROJECT_ROOT/scripts/run_librarian.sh"
+    echo "   $PROJECT_ROOT/scripts/run_professional.sh"
     echo ""
     echo "4. Launch the search interface:"
-    echo "   $PROJECT_ROOT/scripts/run_search_gui.sh"
+    echo "   $PROJECT_ROOT/scripts/run_enterprise_search.sh"
     echo ""
     echo "For detailed information, see:"
     echo "- Installation report: $PROJECT_ROOT/reports/installation_report.txt"

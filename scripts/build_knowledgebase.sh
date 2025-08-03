@@ -21,8 +21,14 @@ fi
 # shellcheck source=/dev/null
 source "${PROJECT_ROOT}/venv/bin/activate"
 
-echo "[INFO] Running the knowledge base builder..."
 cd "${PROJECT_ROOT}"
+
+# Clean all log files first
+if [ -f "scripts/cleanup_logs.sh" ]; then
+    bash scripts/cleanup_logs.sh
+fi
+
+echo "[INFO] Running the knowledge base builder..."
 if ! PYTHONPATH="${PROJECT_ROOT}" python3 src/build_knowledgebase.py; then
   echo "[ERROR] build_knowledgebase.py failed!"
   exit 1

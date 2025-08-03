@@ -104,6 +104,20 @@ class FileDiscoveryStage(ProcessingStage):
                 if file_path.is_file():
                     try:
                         stat_info = file_path.stat()
+                        
+                        # Skip very large files (>2GB) early to avoid processing them later
+                        if stat_info.st_size > 2 * 1024 * 1024 * 1024:
+                            # Only log first few large files to avoid spam
+                            if not hasattr(self, '_large_files_logged'):
+                                self._large_files_logged = 0
+                            if self._large_files_logged < 3:
+                                logger.info(f"Skipping large file during discovery (>2GB, not suitable for document library): {file_path}")
+                                self._large_files_logged += 1
+                            elif self._large_files_logged == 3:
+                                logger.info("Additional large files found but not logged individually to reduce output")
+                                self._large_files_logged += 1
+                            continue
+                        
                         files.append({
                             'path': str(file_path),
                             'size': stat_info.st_size,
@@ -125,12 +139,21 @@ class FileDiscoveryStage(ProcessingStage):
         except OSError as e:
             raise ResourceError(f"OS error accessing {path}: {e}", resource_type="filesystem")
         
+        # Report summary of large files if any were found
+        if hasattr(self, '_large_files_logged') and self._large_files_logged > 0:
+            logger.info(f"Skipped large files (>2GB) during discovery in {path} - these are typically videos/media not suitable for document libraries")
+        
         logger.debug(f"Discovered {len(files)} files in {path}")
         return files
 
 
 class FileValidationStage(ProcessingStage):
     """Professional file validation"""
+    
+    def __init__(self, name: str, max_workers: int = 4):
+        super().__init__(name, max_workers)
+        self._warned_files = set()  # Track files we've already warned about
+        self._large_files_count = 0  # Count of large files skipped
     
     @with_error_handling(
         operation="file_validation",
@@ -177,6 +200,10 @@ class FileValidationStage(ProcessingStage):
             if i % (batch_size * 10) == 0:
                 logger.info(f"Validated {i + len(batch)}/{len(files)} files")
         
+        # Report summary of large files if any were found
+        if self._large_files_count > 0:
+            logger.info(f"Skipped {self._large_files_count} large files (>2GB) - these are typically videos/media not suitable for document libraries")
+        
         logger.info(f"Validated {len(valid_files)} files successfully, {failed_count} failed")
         return valid_files
     
@@ -206,9 +233,12 @@ class FileValidationStage(ProcessingStage):
                 logger.debug(f"Empty file skipped: {file_path}")
                 return None
             
-            # Size limit check (2GB max)
+            # Size limit check (2GB max) - this should rarely trigger now since we filter in discovery
             if stat_info.st_size > 2 * 1024 * 1024 * 1024:
-                logger.warning(f"File too large (>2GB): {file_path}")
+                self._large_files_count += 1
+                if str(file_path) not in self._warned_files:
+                    logger.debug(f"Large file found in validation stage (should have been filtered earlier): {file_path}")
+                    self._warned_files.add(str(file_path))
                 return None
             
             # Accessibility check using os.access
@@ -783,6 +813,13 @@ class ProfessionalLibrarianOrchestrator:
 )
 async def main():
     """Professional main entry point with enterprise error handling"""
+    # Clean all log files first
+    try:
+        from .cleanup_logs import cleanup_logs
+        cleanup_logs()
+    except ImportError:
+        pass  # Fallback if cleanup module not available
+    
     # Load enterprise configuration
     from .enterprise_config_manager import load_config
     
