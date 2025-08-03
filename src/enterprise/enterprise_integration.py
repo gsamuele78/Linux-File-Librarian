@@ -13,12 +13,12 @@ from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
-from src.enterprise_logging import get_logger, LogContext, SecurityLevel
-from src.enterprise_error_handling import with_error_handling, EnterpriseException
-from src.enhanced_classification_engine import EnhancedClassificationEngine
-from src.enhanced_repair_utils import EnhancedRepairManager
-from src.enhanced_deduplication import EnhancedDeduplicationManager
-from src.enhanced_copy_utils import copy_file_with_enhancements
+from src.enterprise.enterprise_logging import get_logger, LogContext, SecurityLevel
+from src.enterprise.enterprise_error_handling import with_error_handling, EnterpriseException
+from src.providers.enhanced_classification_engine import EnhancedClassificationEngine
+from src.services.enhanced_repair_utils import EnhancedRepairManager
+from src.services.enhanced_deduplication import EnhancedDeduplicationManager
+from src.services.enhanced_copy_utils import copy_file_with_enhancements
 
 logger = get_logger(__name__)
 
@@ -319,7 +319,7 @@ class EnterpriseFileProcessor:
     def _copy_file(self, file_info: Dict, destination_root: Path) -> Optional[Dict]:
         """Copy single file with enhancements"""
         try:
-            from src.enhanced_copy_utils import create_enhanced_destination_path
+            from src.services.enhanced_copy_utils import create_enhanced_destination_path
             
             # Create destination directory
             dest_dir = create_enhanced_destination_path(destination_root, file_info)

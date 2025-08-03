@@ -7,7 +7,7 @@ from concurrent.futures import as_completed, ThreadPoolExecutor
 from functools import partial
 from tqdm import tqdm
 import sqlite3
-from src.enhanced_copy_utils import create_enhanced_destination_path, copy_file_enhanced
+from src.services.enhanced_copy_utils import create_enhanced_destination_path, copy_file_enhanced
 
 def get_file_hash_standalone(path, block_size=65536):
     import hashlib
@@ -32,7 +32,7 @@ def get_file_hash_standalone(path, block_size=65536):
 
 def get_pdf_details_standalone(path):
     """Standalone function for PDF validation that can be pickled for multiprocessing"""
-    from src.pdf_manager import PDFManager
+    from src.utils.pdf_manager import PDFManager
     def dummy_log_error(*args, **kwargs):
         pass
     try:
@@ -46,7 +46,7 @@ def analyze_row(row, knowledge_db_path, isbn_cache, pdf_validation):
     import os
     import gc
     import mimetypes
-    from src.classifier import Classifier
+    from src.core.classifier import Classifier
     
     # This function is called from a ThreadPoolExecutor, so it needs to be robust.
     path = row.get('path')
@@ -78,7 +78,7 @@ def analyze_row(row, knowledge_db_path, isbn_cache, pdf_validation):
         if (game_system in ['Miscellaneous', None] or category in ['Miscellaneous', None]) and \
            mime_type.startswith('application/pdf'):
             try:
-                from src.isbn_enricher import enrich_file_with_isbn_metadata
+                from src.core.isbn_enricher import enrich_file_with_isbn_metadata
                 
                 # Check cache first
                 if path in isbn_cache:
@@ -876,7 +876,7 @@ class LibraryBuilder:
     def classify_with_isbn_fallback(self, classifier, filename, full_path, mime_type, isbn_cache):
         """Classify file using multiple fallback methods including ISBN enrichment"""
         try:
-            from src.isbn_enricher import enrich_file_with_isbn_metadata
+            from src.core.isbn_enricher import enrich_file_with_isbn_metadata
         except ImportError:
             print("[WARNING] ISBN enricher not available")
             enrich_file_with_isbn_metadata = None

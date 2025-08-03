@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 import threading
 
-from src.enterprise_logging import get_logger, LogContext, SecurityLevel
+from src.enterprise.enterprise_logging import get_logger, LogContext, SecurityLevel
 
 logger = get_logger(__name__)
 

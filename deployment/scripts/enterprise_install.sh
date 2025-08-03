@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 INSTALL_LOG="$PROJECT_ROOT/logs/enterprise_install.log"
-PYTHON_INSTALLER="$PROJECT_ROOT/src/enterprise_installer.py"
+PYTHON_INSTALLER="$PROJECT_ROOT/src/enterprise/enterprise_installer.py"
 
 # Colors for output
 RED='\033[0;31m'
@@ -149,8 +149,8 @@ backup_existing() {
         fi
         
         # Backup configuration
-        if [ -d "$PROJECT_ROOT/conf" ]; then
-            cp -r "$PROJECT_ROOT/conf" "$backup_dir/" 2>/dev/null || log_warning "Failed to backup configuration"
+        if [ -d "$PROJECT_ROOT/config" ]; then
+            cp -r "$PROJECT_ROOT/config" "$backup_dir/" 2>/dev/null || log_warning "Failed to backup configuration"
         fi
         
         # Backup logs
@@ -217,7 +217,7 @@ verify_installation() {
     # Check scripts permissions
     local scripts=("run_professional.sh" "run_enterprise_search.sh" "build_knowledgebase.sh")
     for script in "${scripts[@]}"; do
-        local script_path="$PROJECT_ROOT/scripts/$script"
+        local script_path="$PROJECT_ROOT/deployment/scripts/$script"
         if [ -f "$script_path" ] && [ ! -x "$script_path" ]; then
             error_exit "Script not executable: $script"
         fi
@@ -243,7 +243,7 @@ After=network.target
 Type=simple
 User=$(whoami)
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$PROJECT_ROOT/venv/bin/python $PROJECT_ROOT/src/enterprise_system_manager.py --project-root $PROJECT_ROOT --monitor
+ExecStart=$PROJECT_ROOT/venv/bin/python $PROJECT_ROOT/src/enterprise/enterprise_system_manager.py --project-root $PROJECT_ROOT --monitor
 Restart=always
 RestartSec=10
 
@@ -286,17 +286,17 @@ generate_report() {
         
         echo "=== Next Steps ==="
         echo "1. Edit configuration: $PROJECT_ROOT/config/config.ini"
-        echo "2. Build knowledge base: $PROJECT_ROOT/scripts/build_knowledgebase.sh"
-        echo "3. Run librarian: $PROJECT_ROOT/scripts/run_professional.sh"
-        echo "4. Launch search GUI: $PROJECT_ROOT/scripts/run_enterprise_search.sh"
+        echo "2. Build knowledge base: $PROJECT_ROOT/deployment/scripts/build_knowledgebase.sh"
+        echo "3. Run librarian: $PROJECT_ROOT/deplyment/scripts/run_professional.sh"
+        echo "4. Launch search GUI: $PROJECT_ROOT/deployment/scripts/run_enterprise_search.sh"
         echo ""
         
         if [ -n "${BACKUP_DIR:-}" ]; then
             echo "=== Backup Information ==="
             echo "Backup created at: $BACKUP_DIR"
             echo "To restore backup if needed:"
-            echo "  rm -rf $PROJECT_ROOT/venv $PROJECT_ROOT/conf"
-            echo "  cp -r $BACKUP_DIR/venv $BACKUP_DIR/conf $PROJECT_ROOT/"
+            echo "  rm -rf $PROJECT_ROOT/venv $PROJECT_ROOT/config"
+            echo "  cp -r $BACKUP_DIR/venv $BACKUP_DIR/config $PROJECT_ROOT/"
             echo ""
         fi
         
@@ -358,13 +358,13 @@ main() {
     echo "   nano $PROJECT_ROOT/config/config.ini"
     echo ""
     echo "2. (Optional) Build the TTRPG knowledge base:"
-    echo "   $PROJECT_ROOT/scripts/build_knowledgebase.sh"
+    echo "   $PROJECT_ROOT/deployment/scripts/build_knowledgebase.sh"
     echo ""
     echo "3. Run the file librarian:"
-    echo "   $PROJECT_ROOT/scripts/run_professional.sh"
+    echo "   $PROJECT_ROOT/deployment/scripts/run_professional.sh"
     echo ""
     echo "4. Launch the search interface:"
-    echo "   $PROJECT_ROOT/scripts/run_enterprise_search.sh"
+    echo "   $PROJECT_ROOT/deployment/scripts/run_enterprise_search.sh"
     echo ""
     echo "For detailed information, see:"
     echo "- Installation report: $PROJECT_ROOT/reports/installation_report.txt"

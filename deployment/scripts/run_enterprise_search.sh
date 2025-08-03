@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 PYTHON_EXE="$PROJECT_ROOT/venv/bin/python"
-SEARCH_GUI="$PROJECT_ROOT/src/enterprise_search_gui.py"
+SEARCH_GUI="$PROJECT_ROOT/src/enterprise/enterprise_search_gui.py"
 LOG_FILE="$PROJECT_ROOT/logs/search_gui.log"
 
 # Colors for output

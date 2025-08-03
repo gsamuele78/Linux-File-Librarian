@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Any, Callable
 import psutil
 import gc
 
-from src.enterprise_logging import get_logger
+from src.enterprise.enterprise_logging import get_logger
 
 logger = get_logger(__name__)
 

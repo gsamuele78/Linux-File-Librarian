@@ -414,7 +414,7 @@ class EnhancedClassificationEngine:
         logger.info("OpenLibrary provider initialized")
         
         # Additional free providers
-        from src.additional_providers import (
+        from src.providers.additional_providers import (
             CrossRefProvider, ArxivProvider, GoogleBooksProvider, 
             WikipediaProvider, InternetArchiveProvider
         )
@@ -440,7 +440,7 @@ class EnhancedClassificationEngine:
         logger.info("Internet Archive provider initialized")
         
         # Gaming industry providers
-        from src.gaming_providers import PaizoProvider, WizardsProvider, DriveThruRPGProvider, GiochiUnitiProvider, AcheronGamesProvider
+        from src.providers.gaming_providers import PaizoProvider, WizardsProvider, DriveThruRPGProvider, GiochiUnitiProvider, AcheronGamesProvider
         
         # Paizo for Pathfinder/Starfinder
         self.providers.append(PaizoProvider())
@@ -471,7 +471,7 @@ class EnhancedClassificationEngine:
         """Enhanced classification with internet enrichment"""
         
         # Start with basic classification
-        from src.enhanced_classification_service import EnhancedClassificationService
+        from src.services.enhanced_classification_service import EnhancedClassificationService
         basic_service = EnhancedClassificationService(self.config)
         classified = basic_service.classify_file(file_info)
         

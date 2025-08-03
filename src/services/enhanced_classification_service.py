@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional, List
 from dataclasses import dataclass
 
-from src.enhanced_media_manager import EnhancedMediaManager, EnhancedClassificationResult
+from src.services.enhanced_media_manager import EnhancedMediaManager, EnhancedClassificationResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class EnhancedClassificationService:
     def _initialize_legacy_service(self):
         """Initialize legacy classification service for TTRPG content"""
         try:
-            from src.enterprise_classification_service import EnterpriseClassificationService
+            from src.enterprise.enterprise_classification_service import EnterpriseClassificationService
             self.legacy_service = EnterpriseClassificationService(self.config)
             logger.info("Legacy TTRPG classification service initialized")
         except Exception as e:

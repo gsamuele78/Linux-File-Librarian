@@ -29,7 +29,9 @@ from pathlib import Path
 sys.path.insert(0, 'src')
 
 try:
-    from enhanced_classification_service import EnhancedClassificationService
+    
+    from providers.enhanced_classification_engine import EnhancedClassificationEngine
+    #from enhanced_classification_service import EnhancedClassificationService
     from enhanced_media_manager import EnhancedMediaManager
     
     print('✓ Enhanced modules imported successfully')

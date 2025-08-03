@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass
-from src.enhanced_classification_engine import MetadataProvider, EnhancedMetadata
+from src.providers.enhanced_classification_engine import MetadataProvider, EnhancedMetadata
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
-from src.enhanced_classification_engine import MetadataProvider, EnhancedMetadata
+from src.providers.enhanced_classification_engine import MetadataProvider, EnhancedMetadata
 
 logger = logging.getLogger(__name__)
 

@@ -4,12 +4,12 @@ REQUIRED_MODULES = [
     ("requests", "requests"),
 ]
 import sys
+import subprocess
 for mod, pipname in REQUIRED_MODULES:
     try:
         globals()[mod] = __import__(mod)
     except ImportError:
-        print(f"[INFO] {mod} not found. Attempting to install {pipname}...", file=sys.stderr)
-        from subprocess import run, CalledProcessError, DEVNULL
+        print(f"[INFO] {mod} not found. Attempting to install {pipname}...", file=sys.stderr) # Changed: Removed unused imports
         try:
             subprocess.check_call([sys.executable, '-m', 'pip', 'install', pipname])
             globals()[mod] = __import__(mod)

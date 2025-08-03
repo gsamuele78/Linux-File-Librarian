@@ -7,7 +7,7 @@ import time
 import sys
 import gc
 from urllib.parse import urljoin, urlparse
-from src.config_loader import load_config
+from src.core.config_loader import load_config
 import concurrent.futures
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry

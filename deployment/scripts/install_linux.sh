@@ -40,7 +40,7 @@ pip install -r "$PROJECT_ROOT/requirements.txt"
 deactivate
 
 echo "[INFO] Setting execution permissions..."
-chmod +x "$PROJECT_ROOT/scripts/"*.sh
+chmod +x "$PROJECT_ROOT/deployment/scripts/"*.sh
 
 # Check for config/config.ini, create a template if missing
 if [ ! -f "$PROJECT_ROOT/config/config.ini" ]; then

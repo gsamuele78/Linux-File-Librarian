@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # Enterprise imports
-from src.enterprise_logging import get_logger, LogContext, SecurityLevel
-from src.enterprise_error_handling import (
+from src.enterprise.enterprise_logging import get_logger, LogContext, SecurityLevel
+from src.enterprise.enterprise_error_handling import (
     with_error_handling, 
     ErrorContext, 
     EnterpriseException,
@@ -36,7 +36,7 @@ from src.enterprise_error_handling import (
 
 logger = get_logger(__name__)
 
-from src.enterprise_architecture import (
+from src.enterprise.enterprise_architecture import (
     EnterpriseLibrarianOrchestrator,
     ProcessingStage,
     ProcessingMetrics,
@@ -380,7 +380,7 @@ class FileRepairStage(ProcessingStage):
     
     def __init__(self, name: str, max_workers: int = 2):
         super().__init__(name, max_workers)
-        from src.enhanced_repair_utils import EnhancedRepairManager
+        from src.services.enhanced_repair_utils import EnhancedRepairManager
         self.repair_manager = EnhancedRepairManager()
         self.repair_dir = Path('repaired_files')
         self.repair_dir.mkdir(exist_ok=True)
@@ -445,7 +445,7 @@ class EnhancedDeduplicationStage(ProcessingStage):
     
     def __init__(self, name: str, max_workers: int = 4):
         super().__init__(name, max_workers)
-        from src.enhanced_deduplication import EnhancedDeduplicationManager
+        from src.services.enhanced_deduplication import EnhancedDeduplicationManager
         self.dedup_manager = EnhancedDeduplicationManager()
     
     async def process(self, files: List[Dict]) -> List[Dict]:
@@ -585,7 +585,7 @@ class FileCopyStage(ProcessingStage):
         """Copy single file to organized location"""
         import os
         import shutil
-        from src.enhanced_copy_utils import create_enhanced_destination_path, copy_file_with_enhancements
+        from src.services.enhanced_copy_utils import create_enhanced_destination_path, copy_file_with_enhancements
         
         try:
             source_path = Path(file_info['path'])
@@ -665,12 +665,12 @@ class ProfessionalLibrarianOrchestrator:
         logger.info("Initializing professional librarian components")
         
         # Initialize performance monitoring
-        from src.enterprise_performance_monitor import get_performance_monitor
+        from src.enterprise.enterprise_performance_monitor import get_performance_monitor
         self.performance_monitor = get_performance_monitor()
         self.performance_monitor.start_monitoring()
         
         # Initialize enterprise integration layer
-        from src.enterprise_integration import EnterpriseFileProcessor
+        from src.enterprise.enterprise_integration import EnterpriseFileProcessor
         self.enterprise_processor = EnterpriseFileProcessor(self.config)
         
         # Log enterprise capabilities
@@ -687,7 +687,7 @@ class ProfessionalLibrarianOrchestrator:
             logger.info(f"  ✓ {provider['name']}")
         
         # Initialize enterprise logging context
-        from src.enterprise_logging import LogContext, SecurityLevel
+        from src.enterprise.enterprise_logging import LogContext, SecurityLevel
         self.log_context = LogContext(
             operation="library_processing",
             component="ProfessionalLibrarianOrchestrator",
@@ -964,13 +964,13 @@ async def main():
     """Professional main entry point with enterprise error handling"""
     # Clean all log files first
     try:
-        from src.cleanup_logs import cleanup_logs
+        from src.utils.cleanup_logs import cleanup_logs
         cleanup_logs()
     except ImportError:
         pass  # Fallback if cleanup module not available
     
     # Load enterprise configuration
-    from src.enterprise_config_manager import load_config
+    from src.enterprise.enterprise_config_manager import load_config
     
     try:
         config_dict = load_config()
@@ -1020,7 +1020,7 @@ if __name__ == "__main__":
     import asyncio
     
     # Configure enterprise logging
-    from src.enterprise_logging import configure_root_logging
+    from src.enterprise.enterprise_logging import configure_root_logging
     configure_root_logging()
     
     # Run main with proper error handling

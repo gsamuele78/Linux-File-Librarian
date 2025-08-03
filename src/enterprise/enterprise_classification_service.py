@@ -64,7 +64,7 @@ class ISBNEnrichmentStrategy(ClassificationStrategy):
     def _get_isbn_enricher(self):
         if self._isbn_enricher is None:
             try:
-                from src.isbn_enricher import enrich_file_with_isbn_metadata
+                from src.core.isbn_enricher import enrich_file_with_isbn_metadata
                 self._isbn_enricher = enrich_file_with_isbn_metadata
             except ImportError:
                 logger.warning("ISBN enricher not available")
@@ -137,7 +137,7 @@ class EnterpriseClassificationService:
         
         if Path(kb_path).exists():
             try:
-                from src.enterprise_classifier import EnterpriseClassifier as Classifier
+                from src.enterprise.enterprise_classifier import EnterpriseClassifier as Classifier
                 classifier = Classifier(kb_path)
                 self.strategies.append(KnowledgeBaseStrategy(classifier))
                 logger.info("Knowledge base strategy initialized")

@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
-from src.enterprise_logging import get_logger
-from src.enterprise_error_handling import ValidationError, SecurityError, EnterpriseException
+from src.enterprise.enterprise_logging import get_logger
+from src.enterprise.enterprise_error_handling import ValidationError, SecurityError, EnterpriseException
 
 logger = get_logger(__name__)
 
