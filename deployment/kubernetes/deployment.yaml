@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: linux-file-librarian
+  namespace: file-management
+  labels:
+    app: linux-file-librarian
+    version: enterprise
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: linux-file-librarian
+  template:
+    metadata:
+      labels:
+        app: linux-file-librarian
+    spec:
+      containers:
+      - name: librarian
+        image: linux-file-librarian:enterprise
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PYTHONPATH
+          value: "/app/src"
+        - name: CONFIG_PATH
+          value: "/app/config/config.ini"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+        - name: data-volume
+          mountPath: /app/data
+        - name: cache-volume
+          mountPath: /app/cache
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config-volume
+        configMap:
+          name: librarian-config
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: librarian-data-pvc
+      - name: cache-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: linux-file-librarian-service
+  namespace: file-management
+spec:
+  selector:
+    app: linux-file-librarian
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: librarian-data-pvc
+  namespace: file-management
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: librarian-config
+  namespace: file-management
+data:
+  config.ini: |
+    [Paths]
+    source_paths = /app/data/input
+    library_root = /app/data/output
+    
+    [Processing]
+    max_workers = 4
+    enable_internet_enrichment = true
+    download_artwork = true
+    
+    [InternetProviders]
+    enable_crossref = true
+    enable_arxiv = true
+    enable_google_books = true
+    enable_paizo = true
+    enable_giochi_uniti = true
