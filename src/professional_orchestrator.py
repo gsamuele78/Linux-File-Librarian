@@ -326,7 +326,7 @@ class FileClassificationStage(ProcessingStage):
         return classified_files
     
     def _classify_file(self, file_info: Dict) -> Optional[Dict]:
-        """Classify single file using enterprise service with validation"""
+        """Classify single file using enhanced engine with internet enrichment"""
         file_path = file_info.get('path')
         if not file_path:
             raise ValidationError("File info missing path for classification", field="path")
@@ -339,8 +339,8 @@ class FileClassificationStage(ProcessingStage):
                     component="FileClassificationStage"
                 )
             
-            # Perform classification
-            classified_info = self.classification_service.classify_file(file_info)
+            # Perform enhanced classification with internet enrichment
+            classified_info = self.classification_service.classify_and_enrich(file_info)
             
             # Validate classification result
             if not classified_info:
@@ -354,13 +354,17 @@ class FileClassificationStage(ProcessingStage):
                 if field not in classified_info:
                     classified_info[field] = 'Unknown'
             
+            # Log enrichment status
+            if classified_info.get('internet_enriched'):
+                logger.info(f"Internet enriched: {Path(file_path).name}")
+            
             classified_info['status'] = ProcessingStatus.COMPLETED
             return classified_info
             
         except Exception as e:
             safe_path = str(file_path)[:100]
             safe_error = str(e)[:100]
-            logger.error(f"Classification error for {safe_path}: {safe_error}")
+            logger.error(f"Enhanced classification error for {safe_path}: {safe_error}")
             file_info.update({
                 'status': ProcessingStatus.FAILED,
                 'game_system': 'Unknown',
@@ -371,41 +375,140 @@ class FileClassificationStage(ProcessingStage):
             return file_info
 
 
-class FileDeduplicationStage(ProcessingStage):
-    """Professional file deduplication"""
+class FileRepairStage(ProcessingStage):
+    """Enhanced file repair stage"""
+    
+    def __init__(self, name: str, max_workers: int = 2):
+        super().__init__(name, max_workers)
+        from .enhanced_repair_utils import EnhancedRepairManager
+        self.repair_manager = EnhancedRepairManager()
+        self.repair_dir = Path('repaired_files')
+        self.repair_dir.mkdir(exist_ok=True)
     
     async def process(self, files: List[Dict]) -> List[Dict]:
-        """Deduplicate files efficiently"""
-        logger.info(f"Deduplicating {len(files)} files")
+        """Repair corrupted files"""
+        logger.info(f"Checking {len(files)} files for repair needs")
         
-        # Group files by size for efficient deduplication
-        size_groups = {}
-        for file_info in files:
-            size = file_info.get('size', 0)
-            if size not in size_groups:
-                size_groups[size] = []
-            size_groups[size].append(file_info)
+        repaired_files = []
+        repair_count = 0
         
-        unique_files = []
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [executor.submit(self._repair_file, file_info) for file_info in files]
+            
+            for future in futures:
+                try:
+                    result = future.result(timeout=300)
+                    if result:
+                        repaired_files.append(result)
+                        if result.get('was_repaired'):
+                            repair_count += 1
+                except Exception as e:
+                    logger.error(f"File repair failed: {e}")
         
-        for size, file_group in size_groups.items():
-            if len(file_group) == 1:
-                # No duplicates possible
-                unique_files.extend(file_group)
-            else:
-                # Check for actual duplicates using hash
-                unique_files.extend(await self._deduplicate_group(file_group))
-        
-        logger.info(f"Deduplicated to {len(unique_files)} unique files")
-        return unique_files
+        logger.info(f"Repair complete: {repair_count} files repaired, {len(repaired_files)} files ready")
+        return repaired_files
     
-    async def _deduplicate_group(self, file_group: List[Dict]) -> List[Dict]:
-        """Deduplicate group of same-size files"""
+    def _repair_file(self, file_info: Dict) -> Optional[Dict]:
+        """Repair single file if needed"""
+        file_path = Path(file_info['path'])
+        
+        try:
+            repair_result = self.repair_manager.repair_file(file_path, self.repair_dir)
+            
+            if repair_result.success and repair_result.repaired_path:
+                # Update file info to point to repaired file
+                repaired_info = file_info.copy()
+                repaired_info['path'] = str(repair_result.repaired_path)
+                repaired_info['was_repaired'] = True
+                repaired_info['repair_details'] = {
+                    'issues_found': repair_result.issues_found,
+                    'repairs_applied': repair_result.repairs_applied,
+                    'confidence': repair_result.confidence
+                }
+                return repaired_info
+            else:
+                # File doesn't need repair or repair failed
+                file_info['was_repaired'] = False
+                if repair_result.issues_found:
+                    file_info['repair_issues'] = repair_result.issues_found
+                return file_info
+                
+        except Exception as e:
+            logger.error(f"Repair attempt failed for {file_path}: {e}")
+            file_info['was_repaired'] = False
+            file_info['repair_error'] = str(e)
+            return file_info
+
+
+class EnhancedDeduplicationStage(ProcessingStage):
+    """Enhanced deduplication with multiple strategies"""
+    
+    def __init__(self, name: str, max_workers: int = 4):
+        super().__init__(name, max_workers)
+        from .enhanced_deduplication import EnhancedDeduplicationManager
+        self.dedup_manager = EnhancedDeduplicationManager()
+    
+    async def process(self, files: List[Dict]) -> List[Dict]:
+        """Enhanced deduplication with content and metadata analysis"""
+        logger.info(f"Enhanced deduplication of {len(files)} files")
+        
+        try:
+            dedup_result = self.dedup_manager.deduplicate_files(files)
+            
+            # Export duplicate report
+            report_path = Path('duplicate_analysis_report.json')
+            self.dedup_manager.export_duplicate_report(dedup_result.duplicate_groups, report_path)
+            
+            # Log summary
+            logger.info(f"Deduplication summary:")
+            logger.info(f"  Original files: {dedup_result.original_count}")
+            logger.info(f"  Unique files: {dedup_result.unique_count}")
+            logger.info(f"  Duplicate groups: {len(dedup_result.duplicate_groups)}")
+            logger.info(f"  Space savings: {dedup_result.space_saved / (1024*1024):.1f}MB")
+            logger.info(f"  Processing time: {dedup_result.processing_time:.2f}s")
+            
+            # Get unique files (recommended files from each duplicate group)
+            unique_files = []
+            duplicate_paths = set()
+            
+            # Collect paths of all duplicate files
+            for group in dedup_result.duplicate_groups:
+                for file_info in group.files:
+                    duplicate_paths.add(file_info['path'])
+            
+            # Add non-duplicate files
+            for file_info in files:
+                if file_info['path'] not in duplicate_paths:
+                    unique_files.append(file_info)
+            
+            # Add recommended files from duplicate groups
+            for group in dedup_result.duplicate_groups:
+                if group.recommended_keep:
+                    recommended = group.recommended_keep.copy()
+                    recommended['dedup_info'] = {
+                        'was_duplicate': True,
+                        'duplicate_type': group.duplicate_type,
+                        'confidence': group.confidence,
+                        'duplicates_removed': len(group.files) - 1
+                    }
+                    unique_files.append(recommended)
+            
+            logger.info(f"Enhanced deduplication complete: {len(unique_files)} unique files selected")
+            return unique_files
+            
+        except Exception as e:
+            logger.error(f"Enhanced deduplication failed: {e}")
+            # Fallback to simple deduplication
+            return await self._simple_deduplication(files)
+    
+    async def _simple_deduplication(self, files: List[Dict]) -> List[Dict]:
+        """Fallback simple deduplication by file hash"""
+        logger.info("Falling back to simple hash-based deduplication")
+        
         hash_map = {}
         
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = [executor.submit(self._calculate_hash, file_info) 
-                      for file_info in file_group]
+            futures = [executor.submit(self._calculate_hash, file_info) for file_info in files]
             
             for future in futures:
                 try:
@@ -415,10 +518,12 @@ class FileDeduplicationStage(ProcessingStage):
                 except Exception as e:
                     logger.error(f"Hash calculation failed: {e}")
         
-        return list(hash_map.values())
+        unique_files = list(hash_map.values())
+        logger.info(f"Simple deduplication complete: {len(unique_files)} unique files")
+        return unique_files
     
     def _calculate_hash(self, file_info: Dict) -> Tuple[Dict, str]:
-        """Calculate file hash efficiently"""
+        """Calculate file hash for simple deduplication"""
         import hashlib
         
         file_path = Path(file_info['path'])
@@ -426,10 +531,8 @@ class FileDeduplicationStage(ProcessingStage):
         
         try:
             with open(file_path, 'rb') as f:
-                # Read in chunks to handle large files
                 for chunk in iter(lambda: f.read(8192), b""):
                     hash_obj.update(chunk)
-            
             return file_info, hash_obj.hexdigest()
         except Exception as e:
             logger.error(f"Hash calculation error for {file_path}: {e}")
@@ -482,7 +585,7 @@ class FileCopyStage(ProcessingStage):
         """Copy single file to organized location"""
         import os
         import shutil
-        from .enhanced_copy_utils import create_enhanced_destination_path, copy_file_enhanced
+        from .enhanced_copy_utils import create_enhanced_destination_path, copy_file_with_enhancements
         
         try:
             source_path = Path(file_info['path'])
@@ -512,7 +615,7 @@ class FileCopyStage(ProcessingStage):
                 file_info['status'] = ProcessingStatus.FAILED
                 return file_info
             
-            dest_path = copy_file_enhanced(source_path, dest_dir)
+            dest_path = copy_file_with_enhancements(source_path, dest_dir, file_info)
             
             if dest_path:
                 file_info.update({
@@ -566,9 +669,22 @@ class ProfessionalLibrarianOrchestrator:
         self.performance_monitor = get_performance_monitor()
         self.performance_monitor.start_monitoring()
         
-        # Initialize classification service
-        from .enterprise_classification_service import EnterpriseClassificationService
-        self.classification_service = EnterpriseClassificationService(self.config)
+        # Initialize enterprise integration layer
+        from .enterprise_integration import EnterpriseFileProcessor
+        self.enterprise_processor = EnterpriseFileProcessor(self.config)
+        
+        # Log enterprise capabilities
+        status = self.enterprise_processor.get_enterprise_status()
+        logger.info(f"Enterprise file processor initialized:")
+        logger.info(f"  Classification providers: {status['classification']['providers_available']}")
+        logger.info(f"  Internet enrichment: {status['enterprise_features']['internet_enrichment']}")
+        logger.info(f"  Document repair: {status['enterprise_features']['document_repair']}")
+        logger.info(f"  Enhanced deduplication: {status['enterprise_features']['enhanced_deduplication']}")
+        logger.info(f"  NFO generation: {status['enterprise_features']['nfo_generation']}")
+        logger.info(f"  Artwork download: {status['enterprise_features']['artwork_download']}")
+        
+        for provider in status['classification']['providers']:
+            logger.info(f"  ✓ {provider['name']}")
         
         # Initialize enterprise logging context
         from .enterprise_logging import LogContext, SecurityLevel
@@ -607,13 +723,46 @@ class ProfessionalLibrarianOrchestrator:
                     # Create processing pipeline
                     pipeline = self.orchestrator.create_pipeline('main_processing')
                     
-                    # Add stages with enterprise configuration
+                    # Use enterprise processing pipeline
                     max_workers = self.config.get('max_workers', 4)
+                    
+                    # File discovery and validation
                     pipeline.add_stage(FileDiscoveryStage('file_discovery', max_workers))
                     pipeline.add_stage(FileValidationStage('file_validation', max_workers))
-                    pipeline.add_stage(FileClassificationStage('file_classification', self.classification_service, max_workers))
-                    pipeline.add_stage(FileDeduplicationStage('file_deduplication', max_workers))
-                    pipeline.add_stage(FileCopyStage('file_copy', library_root, max_workers))
+                    
+                    # Execute enterprise processing
+                    logger.info("Executing enterprise processing pipeline")
+                    
+                    # Get validated files from pipeline
+                    validated_files = []
+                    async for stage_result in pipeline.process_async(source_paths):
+                        if isinstance(stage_result, list):
+                            validated_files = stage_result
+                            break
+                    
+                    # Process with enterprise processor
+                    enterprise_result = await self.enterprise_processor.process_files(
+                        validated_files, Path(library_root)
+                    )
+                    
+                    # Convert to pipeline metrics format
+                    metrics = ProcessingMetrics()
+                    metrics.files_processed = enterprise_result.files_processed
+                    metrics.files_failed = len(validated_files) - enterprise_result.files_processed
+                    metrics.duration = enterprise_result.processing_time
+                    metrics.throughput_files_per_second = enterprise_result.files_processed / enterprise_result.processing_time if enterprise_result.processing_time > 0 else 0
+                    
+                    # Generate enterprise report
+                    enterprise_report = self.enterprise_processor.generate_enterprise_report(enterprise_result)
+                    
+                    # Save enterprise report
+                    import json
+                    with open('enterprise_processing_report.json', 'w') as f:
+                        json.dump(enterprise_report, f, indent=2, default=str)
+                    
+                    logger.info(f"Enterprise processing completed with {enterprise_report['executive_summary']['efficiency_rating']} efficiency")
+                    
+                    return metrics
                     
                     # Execute pipeline with monitoring
                     logger.info(f"Processing {len(source_paths)} source paths with {max_workers} workers")

@@ -1,0 +1,52 @@
+# Enhanced Media Manager Dependencies
+# Install with: pip install -r requirements-enhanced.txt
+
+# Web scraping for gaming providers
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+
+# PDF Processing
+PyPDF2>=3.0.0
+pdfplumber>=0.9.0
+
+# Audio Processing
+mutagen>=1.46.0
+
+# Image Processing
+Pillow>=9.0.0
+
+# Document Processing
+python-docx>=0.8.11
+
+# System File Detection
+python-magic>=0.4.27
+
+# Internet Metadata Enrichment
+requests>=2.28.0
+
+# Web scraping for gaming providers
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+
+# JSON handling (usually included with Python)
+# json (built-in)
+
+# Optional: Windows support for python-magic
+# python-magic-bin>=0.4.14  # Uncomment for Windows
+
+# System Dependencies for Enhanced Features:
+# 
+# Video Processing & Repair:
+# - Ubuntu/Debian: sudo apt install ffmpeg
+# - CentOS/RHEL: sudo yum install ffmpeg  
+# - macOS: brew install ffmpeg
+# 
+# PDF Repair:
+# - Ubuntu/Debian: sudo apt install qpdf ghostscript
+# - CentOS/RHEL: sudo yum install qpdf ghostscript
+# - macOS: brew install qpdf ghostscript
+# 
+# Archive Repair:
+# - Ubuntu/Debian: sudo apt install unrar p7zip-full
+# - CentOS/RHEL: sudo yum install unrar p7zip
+# - macOS: brew install unrar p7zip

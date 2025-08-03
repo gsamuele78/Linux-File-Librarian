@@ -1,0 +1,84 @@
+# Linux File Librarian Configuration
+# Copy this file to config.ini and customize your settings
+
+[Paths]
+# Source directories to scan (comma-separated)
+# Example: /home/user/Downloads,/home/user/Documents,/media/external_drive
+source_paths = /path/to/your/source/folder
+
+# Destination for organized library
+library_root = /path/to/your/organized/library
+
+[Processing]
+# Maximum worker threads for parallel processing
+max_workers = 4
+
+# Enable internet metadata enrichment (requires API keys)
+enable_internet_enrichment = false
+
+# Download artwork/fanart (requires internet enrichment)
+download_artwork = false
+
+[Database]
+# Knowledge base database location
+url = knowledge.sqlite
+
+[KnowledgeBaseURLs]
+# TTRPG knowledge base sources (comment out with # to disable)
+drivethrurpg = https://www.drivethrurpg.com
+dmsguild = https://www.dmsguild.com
+# Add more sources as needed
+
+[APIKeys]
+# The Movie Database API key (for movie/TV metadata)
+# Get free key at: https://www.themoviedb.org/settings/api
+tmdb_api_key = 
+
+# Fanart.tv API key (for high-quality artwork)
+# Get free key at: https://fanart.tv/get-an-api-key/
+fanart_api_key = 
+
+# Open Library doesn't require API key
+
+[General]
+# Enable debug logging
+debug = false
+
+# File size limits (in bytes)
+max_file_size = 2147483648  # 2GB
+
+# Skip hidden files and directories
+skip_hidden = true
+
+[Repair]
+# Enable automatic file repair
+enable_repair = true
+
+# Repair confidence threshold (0.0-1.0)
+repair_threshold = 0.6
+
+[Deduplication]
+# Enable enhanced deduplication
+enable_enhanced_dedup = true
+
+# Deduplication strategies (exact,content,metadata)
+dedup_strategies = exact,content,metadata
+
+# Minimum confidence for duplicate detection
+dedup_threshold = 0.7
+
+[InternetProviders]
+# Free Internet Providers (no API keys required)
+enable_crossref = true          # Academic papers via CrossRef
+enable_arxiv = true             # Scientific preprints
+enable_google_books = true      # Book metadata
+enable_openlibrary = true       # Library books
+enable_wikipedia = true         # General knowledge
+enable_internet_archive = true  # Historical documents
+
+# Gaming Industry Providers
+enable_paizo = true             # Pathfinder/Starfinder content
+enable_wizards = true           # D&D content
+enable_drivethrurpg = true      # General TTRPG content
+enable_giochi_uniti = true      # Italian RPG content
+enable_acheron_games = true     # Italian gaming publisher

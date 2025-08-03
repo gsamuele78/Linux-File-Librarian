@@ -1,167 +1,411 @@
 #!/usr/bin/env python3
 """
-Enterprise File Organization System
-Implements professional hierarchical structure using classification data
+Enhanced Copy Utilities
+
+Provides enhanced file copying with intelligent directory structure creation
+based on enhanced media classification results.
 """
 
-import os
+import logging
 import shutil
+import os
 from pathlib import Path
-from typing import Optional, Tuple, Dict
-from dataclasses import dataclass
+from typing import Dict, Optional, List
+import unicodedata
+import re
+
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class OrganizationHierarchy:
-    """Professional file organization structure"""
-    primary: str
-    secondary: str
-    tertiary: Optional[str] = None
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename for cross-platform compatibility"""
     
-    def to_path(self, root: Path) -> Path:
-        """Convert hierarchy to filesystem path"""
-        path = root / self.primary / self.secondary
-        return path / self.tertiary if self.tertiary else path
-
-
-class EnterpriseFileOrganizer:
-    """Enterprise-grade file organization using classification data"""
+    # Normalize unicode characters
+    filename = unicodedata.normalize('NFKD', filename)
     
-    @classmethod
-    def organize_file(cls, file_info: Dict) -> OrganizationHierarchy:
-        """Create professional organization hierarchy"""
-        game_system = file_info.get('game_system', 'Unknown')
-        category = file_info.get('category', 'Unknown')
-        source_path = Path(file_info['path'])
-        
-        # TTRPG files
-        if game_system not in ['Unknown', 'Miscellaneous']:
-            return cls._organize_ttrpg_file(file_info, source_path)
-        
-        # Content-based organization
-        return cls._organize_content_file(file_info, source_path)
+    # Remove or replace problematic characters
+    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+    filename = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', filename)  # Remove control characters
     
-    @classmethod
-    def _organize_ttrpg_file(cls, file_info: Dict, source_path: Path) -> OrganizationHierarchy:
-        """Organize TTRPG files"""
-        game_system = file_info.get('game_system', 'Unknown')
-        edition = file_info.get('edition', 'General')
-        content_type = cls._detect_ttrpg_content(source_path)
-        
-        return OrganizationHierarchy(
-            primary=f"TTRPG/{game_system}",
-            secondary=edition if edition != 'Unknown' else 'General',
-            tertiary=content_type
-        )
+    # Replace multiple spaces/underscores with single ones
+    filename = re.sub(r'[_\s]+', '_', filename)
     
-    @classmethod
-    def _organize_content_file(cls, file_info: Dict, source_path: Path) -> OrganizationHierarchy:
-        """Organize by content type"""
-        category = file_info.get('category', 'Unknown')
-        ext = source_path.suffix.lower()
-        
-        if ext in ['.mp4', '.avi', '.mkv', '.mov']:
-            return OrganizationHierarchy('Media', 'Video', 'General')
-        elif ext in ['.mp3', '.wav', '.flac', '.ogg']:
-            return OrganizationHierarchy('Media', 'Audio', 'General')
-        elif ext in ['.jpg', '.png', '.gif', '.bmp']:
-            return OrganizationHierarchy('Media', 'Images', 'General')
-        elif ext == '.pdf':
-            return OrganizationHierarchy('Documents', 'PDF', 'General')
-        elif ext in ['.zip', '.rar', '.7z']:
-            return OrganizationHierarchy('Archives', 'Compressed', None)
-        else:
-            return OrganizationHierarchy('General', 'Uncategorized', None)
+    # Remove leading/trailing dots and spaces
+    filename = filename.strip('. ')
     
-    @staticmethod
-    def _detect_ttrpg_content(source_path: Path) -> str:
-        """Detect TTRPG content type"""
-        filename = source_path.name.lower()
+    # Ensure filename isn't empty
+    if not filename:
+        filename = 'unnamed_file'
+    
+    # Limit length (keeping extension)
+    if len(filename) > 200:
+        name, ext = os.path.splitext(filename)
+        filename = name[:200-len(ext)] + ext
+    
+    return filename
+
+
+def create_enhanced_destination_path(library_root: Path, file_info: Dict) -> Path:
+    """Create enhanced destination path based on classification results"""
+    
+    # Get classification information
+    game_system = file_info.get('game_system', 'Unknown')
+    edition = file_info.get('edition', 'Unknown')
+    category = file_info.get('category', 'Unknown')
+    
+    # Check for enhanced metadata path
+    suggested_path = file_info.get('suggested_path')
+    if suggested_path and len(suggested_path) >= 3:
+        level1, level2, level3 = suggested_path[0], suggested_path[1], suggested_path[2]
+    else:
+        level1, level2, level3 = game_system, edition, category
+    
+    # Sanitize path components
+    level1 = sanitize_filename(level1)
+    level2 = sanitize_filename(level2)
+    level3 = sanitize_filename(level3)
+    
+    # Create enhanced directory structure
+    dest_dir = library_root / level1 / level2 / level3
+    
+    # Add metadata-based subdirectories for better organization
+    enhanced_metadata = file_info.get('enhanced_metadata', {})
+    
+    # For media files, add year/genre subdirectories if available
+    if level1 == "Media" and enhanced_metadata:
+        year = enhanced_metadata.get('year')
+        genre = enhanced_metadata.get('genre')
         
-        if any(term in filename for term in ['core', 'player', 'handbook']):
-            return 'Core Rules'
-        elif any(term in filename for term in ['adventure', 'module']):
-            return 'Adventures'
-        elif any(term in filename for term in ['supplement', 'guide']):
-            return 'Supplements'
-        else:
-            return 'General'
+        if year and year != 'Unknown':
+            year_clean = sanitize_filename(str(year)[:4])  # Just the year part
+            dest_dir = dest_dir / year_clean
+        
+        if genre and genre != 'Unknown' and level2 in ['Audio', 'Video']:
+            genre_clean = sanitize_filename(genre)
+            dest_dir = dest_dir / genre_clean
+    
+    # For documents, add author/publisher subdirectories if available
+    elif level1 == "Documents" and enhanced_metadata:
+        author = enhanced_metadata.get('author') or enhanced_metadata.get('creator')
+        publisher = enhanced_metadata.get('publisher')
+        
+        if author and author != 'Unknown':
+            author_clean = sanitize_filename(author)
+            dest_dir = dest_dir / author_clean
+        elif publisher and publisher != 'Unknown':
+            publisher_clean = sanitize_filename(publisher)
+            dest_dir = dest_dir / publisher_clean
+    
+    # Ensure directory exists
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.debug(f"Created destination directory: {dest_dir}")
+    return dest_dir
 
 
-def detect_hierarchical_structure(source_path: Path, game_system: str) -> tuple:
-    """Legacy function - use EnterpriseFileOrganizer instead"""
-    return None, None, None
-
-
-# Legacy functions - replaced by EnterpriseFileOrganizer
-def categorize_non_ttrpg_file(file_info: dict) -> tuple:
-    """Legacy function"""
-    return 'General', 'Uncategorized', None
-
-
-def create_enhanced_destination_path(destination_root: Path, file_info: dict) -> Path:
-    """Create professional hierarchical path using enterprise organization"""
-    hierarchy = EnterpriseFileOrganizer.organize_file(file_info)
-    return hierarchy.to_path(destination_root)
-
+def generate_unique_filename(dest_dir: Path, original_filename: str) -> str:
+    """Generate unique filename to avoid conflicts"""
+    
+    sanitized_name = sanitize_filename(original_filename)
+    dest_path = dest_dir / sanitized_name
+    
+    if not dest_path.exists():
+        return sanitized_name
+    
+    # File exists, generate unique name
+    name, ext = os.path.splitext(sanitized_name)
+    counter = 1
+    
+    while True:
+        new_name = f"{name}_{counter:03d}{ext}"
+        new_path = dest_dir / new_name
+        
+        if not new_path.exists():
+            return new_name
+        
+        counter += 1
+        
+        # Safety limit
+        if counter > 999:
+            import time
+            timestamp = int(time.time())
+            return f"{name}_{timestamp}{ext}"
 
 
 def copy_file_enhanced(source_path: Path, dest_dir: Path) -> Optional[Path]:
-    """Copy file to destination with conflict resolution"""
+    """Enhanced file copying with metadata preservation and error handling"""
+    
     try:
-        # Create destination directory
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = dest_dir / source_path.name
+        # Generate unique destination filename
+        dest_filename = generate_unique_filename(dest_dir, source_path.name)
+        dest_path = dest_dir / dest_filename
         
-        # Handle name conflicts
-        counter = 1
-        while dest_path.exists():
-            stem = source_path.stem
-            suffix = source_path.suffix
-            dest_path = dest_dir / f"{stem}_{counter}{suffix}"
-            counter += 1
-            
-            # Prevent infinite loops
-            if counter > 1000:
-                print(f"Too many conflicts for {source_path.name}, skipping")
-                return None
+        # Check available space
+        available_space = shutil.disk_usage(dest_dir).free
+        file_size = source_path.stat().st_size
         
-        # Verify source exists and is readable
-        if not source_path.exists():
-            print(f"Source file does not exist: {source_path}")
-            return None
-            
-        if not os.access(source_path, os.R_OK):
-            print(f"Source file not readable: {source_path}")
+        if available_space < file_size * 1.5:  # Need 1.5x space for safety
+            logger.error(f"Insufficient disk space for {source_path}")
             return None
         
-        # Check destination directory is writable
-        if not os.access(dest_dir, os.W_OK):
-            print(f"Destination directory not writable: {dest_dir}")
-            return None
+        # Perform the copy
+        logger.debug(f"Copying {source_path} -> {dest_path}")
         
-        # Copy file with metadata preservation
+        # Use copy2 to preserve metadata
         shutil.copy2(source_path, dest_path)
         
         # Verify copy was successful
         if not dest_path.exists():
-            print(f"Copy verification failed: {dest_path} was not created")
-            return None
-            
-        # Verify file sizes match
-        if source_path.stat().st_size != dest_path.stat().st_size:
-            print(f"Copy verification failed: size mismatch for {dest_path}")
-            dest_path.unlink()  # Remove incomplete copy
+            logger.error(f"Copy verification failed: {dest_path} does not exist")
             return None
         
+        # Verify file size matches
+        if dest_path.stat().st_size != source_path.stat().st_size:
+            logger.error(f"Copy verification failed: size mismatch for {dest_path}")
+            dest_path.unlink()  # Remove corrupted copy
+            return None
+        
+        logger.debug(f"Successfully copied to {dest_path}")
         return dest_path
         
     except PermissionError as e:
-        print(f"Permission error copying {source_path}: {e}")
+        logger.error(f"Permission denied copying {source_path}: {e}")
         return None
     except OSError as e:
-        print(f"OS error copying {source_path}: {e}")
+        logger.error(f"OS error copying {source_path}: {e}")
         return None
     except Exception as e:
-        print(f"Unexpected error copying {source_path}: {type(e).__name__}: {e}")
+        logger.error(f"Unexpected error copying {source_path}: {e}")
         return None
+
+
+def create_media_nfo_file(dest_path: Path, file_info: Dict) -> bool:
+    """Create NFO file with metadata (similar to MediaElch)"""
+    
+    enhanced_metadata = file_info.get('enhanced_metadata', {})
+    if not enhanced_metadata or not any(enhanced_metadata.values()):
+        return False
+    
+    try:
+        nfo_path = dest_path.with_suffix('.nfo')
+        
+        # Create NFO content based on media type
+        media_type = file_info.get('media_type', 'Unknown')
+        
+        if media_type == 'Video':
+            nfo_content = create_video_nfo(enhanced_metadata, file_info)
+        elif media_type == 'Audio':
+            nfo_content = create_audio_nfo(enhanced_metadata, file_info)
+        elif media_type == 'PDF':
+            nfo_content = create_document_nfo(enhanced_metadata, file_info)
+        else:
+            nfo_content = create_generic_nfo(enhanced_metadata, file_info)
+        
+        if nfo_content:
+            with open(nfo_path, 'w', encoding='utf-8') as f:
+                f.write(nfo_content)
+            
+            logger.debug(f"Created NFO file: {nfo_path}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Failed to create NFO file for {dest_path}: {e}")
+    
+    return False
+
+
+def create_video_nfo(metadata: Dict, file_info: Dict) -> str:
+    """Create video NFO content"""
+    
+    title = metadata.get('title') or Path(file_info['path']).stem
+    
+    nfo_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+    <title>{escape_xml(title)}</title>
+    <originaltitle>{escape_xml(title)}</originaltitle>
+    <year>{metadata.get('year', 'Unknown')}</year>
+    <genre>{metadata.get('genre', 'Unknown')}</genre>
+    <director>{metadata.get('creator', 'Unknown')}</director>
+    <plot>Automatically classified video file</plot>
+    <runtime>{metadata.get('duration', 'Unknown')}</runtime>
+    <fileinfo>
+        <streamdetails>
+            <video>
+                <codec>{metadata.get('format_info', 'Unknown')}</codec>
+                <width>{metadata.get('resolution', '').split('x')[0] if 'x' in str(metadata.get('resolution', '')) else 'Unknown'}</width>
+                <height>{metadata.get('resolution', '').split('x')[1] if 'x' in str(metadata.get('resolution', '')) else 'Unknown'}</height>
+            </video>
+        </streamdetails>
+    </fileinfo>
+    <classification_info>
+        <source>{file_info.get('classification_source', 'Unknown')}</source>
+        <confidence>{file_info.get('classification_confidence', 0.0)}</confidence>
+        <category>{file_info.get('category', 'Unknown')}</category>
+    </classification_info>
+</movie>"""
+    
+    return nfo_content
+
+
+def create_audio_nfo(metadata: Dict, file_info: Dict) -> str:
+    """Create audio NFO content"""
+    
+    title = metadata.get('title') or Path(file_info['path']).stem
+    
+    nfo_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<album>
+    <title>{escape_xml(title)}</title>
+    <artist>{escape_xml(metadata.get('author', 'Unknown'))}</artist>
+    <year>{metadata.get('year', 'Unknown')}</year>
+    <genre>{metadata.get('genre', 'Unknown')}</genre>
+    <duration>{metadata.get('duration', 'Unknown')}</duration>
+    <format>{metadata.get('format_info', 'Unknown')}</format>
+    <classification_info>
+        <source>{file_info.get('classification_source', 'Unknown')}</source>
+        <confidence>{file_info.get('classification_confidence', 0.0)}</confidence>
+        <category>{file_info.get('category', 'Unknown')}</category>
+    </classification_info>
+</album>"""
+    
+    return nfo_content
+
+
+def create_document_nfo(metadata: Dict, file_info: Dict) -> str:
+    """Create document NFO content"""
+    
+    title = metadata.get('title') or Path(file_info['path']).stem
+    
+    nfo_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<document>
+    <title>{escape_xml(title)}</title>
+    <author>{escape_xml(metadata.get('author', 'Unknown'))}</author>
+    <creator>{escape_xml(metadata.get('creator', 'Unknown'))}</creator>
+    <publisher>{escape_xml(metadata.get('publisher', 'Unknown'))}</publisher>
+    <year>{metadata.get('year', 'Unknown')}</year>
+    <language>{metadata.get('language', 'Unknown')}</language>
+    <pages>{metadata.get('pages', 'Unknown')}</pages>
+    <isbn>{metadata.get('isbn', 'Unknown')}</isbn>
+    <format>{metadata.get('format_info', 'Unknown')}</format>
+    <classification_info>
+        <source>{file_info.get('classification_source', 'Unknown')}</source>
+        <confidence>{file_info.get('classification_confidence', 0.0)}</confidence>
+        <category>{file_info.get('category', 'Unknown')}</category>
+    </classification_info>
+</document>"""
+    
+    return nfo_content
+
+
+def create_generic_nfo(metadata: Dict, file_info: Dict) -> str:
+    """Create generic NFO content"""
+    
+    title = metadata.get('title') or Path(file_info['path']).stem
+    
+    nfo_content = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<file>
+    <title>{escape_xml(title)}</title>
+    <creator>{escape_xml(metadata.get('creator', 'Unknown'))}</creator>
+    <format>{metadata.get('format_info', 'Unknown')}</format>
+    <size>{metadata.get('file_size', 'Unknown')}</size>
+    <created>{metadata.get('creation_date', 'Unknown')}</created>
+    <modified>{metadata.get('modification_date', 'Unknown')}</modified>
+    <classification_info>
+        <source>{file_info.get('classification_source', 'Unknown')}</source>
+        <confidence>{file_info.get('classification_confidence', 0.0)}</confidence>
+        <category>{file_info.get('category', 'Unknown')}</category>
+        <game_system>{file_info.get('game_system', 'Unknown')}</game_system>
+        <edition>{file_info.get('edition', 'Unknown')}</edition>
+    </classification_info>
+</file>"""
+    
+    return nfo_content
+
+
+def escape_xml(text: str) -> str:
+    """Escape XML special characters"""
+    if not text or text == 'Unknown':
+        return text
+    
+    text = str(text)
+    text = text.replace('&', '&amp;')
+    text = text.replace('<', '&lt;')
+    text = text.replace('>', '&gt;')
+    text = text.replace('"', '&quot;')
+    text = text.replace("'", '&apos;')
+    
+    return text
+
+
+def create_directory_index(dest_dir: Path) -> bool:
+    """Create directory index file with metadata summary"""
+    
+    try:
+        index_path = dest_dir / '_directory_index.json'
+        
+        # Collect information about files in directory
+        files_info = []
+        nfo_files = list(dest_dir.glob('*.nfo'))
+        
+        for nfo_file in nfo_files:
+            try:
+                # Parse basic info from NFO
+                with open(nfo_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Extract title (simple regex)
+                import re
+                title_match = re.search(r'<title>(.*?)</title>', content)
+                title = title_match.group(1) if title_match else nfo_file.stem
+                
+                files_info.append({
+                    'filename': nfo_file.stem,
+                    'title': title,
+                    'nfo_file': nfo_file.name
+                })
+                
+            except Exception as e:
+                logger.debug(f"Error processing NFO {nfo_file}: {e}")
+        
+        if files_info:
+            import json
+            index_data = {
+                'directory': str(dest_dir.relative_to(dest_dir.parents[2])),  # Relative to library root
+                'file_count': len(files_info),
+                'files': files_info,
+                'created': str(Path().cwd())  # Timestamp would be better
+            }
+            
+            with open(index_path, 'w', encoding='utf-8') as f:
+                json.dump(index_data, f, indent=2, ensure_ascii=False)
+            
+            logger.debug(f"Created directory index: {index_path}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Failed to create directory index for {dest_dir}: {e}")
+    
+    return False
+
+
+def copy_file_with_enhancements(source_path: Path, dest_dir: Path, file_info: Dict) -> Optional[Path]:
+    """Copy file with all enhancements: metadata preservation, NFO creation, indexing"""
+    
+    # Perform the basic copy
+    dest_path = copy_file_enhanced(source_path, dest_dir)
+    
+    if not dest_path:
+        return None
+    
+    # Create NFO file if we have metadata
+    try:
+        create_media_nfo_file(dest_path, file_info)
+    except Exception as e:
+        logger.debug(f"NFO creation failed for {dest_path}: {e}")
+    
+    # Update directory index
+    try:
+        create_directory_index(dest_dir)
+    except Exception as e:
+        logger.debug(f"Directory index update failed for {dest_dir}: {e}")
+    
+    return dest_path

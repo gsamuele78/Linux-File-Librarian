@@ -5,7 +5,8 @@ A robust, modular file management system for sysadmins, built with a "system eng
 ### Core Philosophy
 - **Configuration over Code:** All user settings are in a single `conf/config.ini` file. No need to edit Python scripts for setup.
 - **Non-Destructive:** Your original files are never touched or deleted. The system only copies the selected files to a new location.
-- **Intelligent Categorization:** Uses a multi-tiered approach (TTRPG knowledge base, folder name analysis, file type) to logically sort every file.
+- **Intelligent Categorization:** Uses a multi-tiered approach (TTRPG knowledge base, enhanced media detection, folder name analysis, file type) to logically sort every file.
+- **Enhanced Media Management:** Similar to MediaElch, extracts metadata from PDFs, videos, audio, images, and documents, creating NFO files for rich organization.
 - **Robust & Transparent:** Handles common errors (like corrupted files or broken web links) gracefully and provides clear feedback.
 - **Clean Logging:** Automatically cleans old log files at startup to prevent disk space issues and provide fresh logs for each run.
 
@@ -17,11 +18,26 @@ A robust, modular file management system for sysadmins, built with a "system eng
     cd Linux-File-Librarian
     ```
 
-2.  **Run the Installer:**
+2.  **Run the Basic Installer:**
     This script installs system packages and sets up a self-contained Python virtual environment.
     ```bash
     bash scripts/install.sh
     ```
+
+3.  **(Optional) Install Enhanced Media Manager:**
+    For comprehensive media and document processing with metadata extraction:
+    ```bash
+    bash scripts/install_enhanced.sh
+    ```
+    
+    This adds support for:
+    - PDF metadata extraction and ISBN detection
+    - Video metadata extraction (requires ffmpeg)
+    - Audio metadata extraction with ID3 tags
+    - Image EXIF data extraction
+    - Document metadata extraction
+    - NFO file generation (MediaElch-style)
+    - Enhanced directory organization
 
 ## Configuration (Required First Step)
 

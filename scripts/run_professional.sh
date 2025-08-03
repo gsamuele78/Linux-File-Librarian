@@ -276,7 +276,7 @@ if __name__ == "__main__":
 EOF
         
     if [ -f "$LOG_DIR/performance_metrics.json" ]; then
-        python3 "$LOG_DIR/generate_report.py" "$LOG_DIR/performance_metrics.json" "$REPORT_DIR/performance_report.txt"
+        python3 "$PROJECT_ROOT/src/generate_report.py" "$LOG_DIR/performance_metrics.json" "$REPORT_DIR/performance_report.txt"
     else
         # Generate basic report if metrics file doesn't exist
         echo "No performance metrics file found. Generating basic report..." > "$REPORT_DIR/performance_report.txt"
