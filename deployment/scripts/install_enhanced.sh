@@ -4,7 +4,7 @@
 
 set -e
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 echo "=========================================="
@@ -13,7 +13,7 @@ echo "=========================================="
 
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then
-    echo "Error: Virtual environment not found. Please run scripts/install.sh first."
+    echo "Error: Virtual environment not found. Please run deployment/scripts/install.sh first."
     exit 1
 fi
 
@@ -86,7 +86,7 @@ import sys
 sys.path.insert(0, 'src')
 
 try:
-    from enhanced_classification_engine import EnhancedClassificationEngine
+    from providers.enhanced_classification_engine import EnhancedClassificationEngine
     engine = EnhancedClassificationEngine({})
     status = engine.get_provider_status()
     
@@ -135,5 +135,5 @@ echo "• International TTRPG support (Italian publishers)"
 echo "• Enterprise-grade processing pipeline"
 echo "• Comprehensive quality metrics"
 echo ""
-echo "Run './scripts/run_professional.sh' to use enhanced features"
+echo "Run './deployment/scripts/run_professional.sh' to use enhanced features"
 echo "=========================================="
