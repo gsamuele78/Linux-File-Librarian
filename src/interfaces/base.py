@@ -171,12 +171,12 @@ class IMetricsCollector(ABC):
     """Metrics collection interface"""
     
     @abstractmethod
-    def record_metric(self, name: str, value: float, tags: Dict[str, str] = None) -> None:
+    def record_metric(self, name: str, value: float, tags: Optional[Dict[str, str]] = None) -> None:
         """Record a metric"""
         pass
     
     @abstractmethod
-    def increment_counter(self, name: str, tags: Dict[str, str] = None) -> None:
+    def increment_counter(self, name: str, tags: Optional[Dict[str, str]] = None) -> None:
         """Increment a counter"""
         pass
     

@@ -167,7 +167,7 @@ class TestInterfaceContracts:
         
         # Verify methods are abstract
         with pytest.raises(TypeError):
-            IConfigurationManager()
+            IConfigurationManager()  # type: ignore
     
     def test_classification_service_contract(self):
         """Test IClassificationService contract"""
@@ -177,7 +177,7 @@ class TestInterfaceContracts:
         
         # Verify methods are abstract
         with pytest.raises(TypeError):
-            IClassificationService()
+            IClassificationService()  # type: ignore
     
     def test_metadata_provider_contract(self):
         """Test IMetadataProvider contract"""
@@ -188,7 +188,7 @@ class TestInterfaceContracts:
         
         # Verify methods are abstract
         with pytest.raises(TypeError):
-            IMetadataProvider()
+            IMetadataProvider()  # type: ignore
 
 
 class TestProcessingStatus:

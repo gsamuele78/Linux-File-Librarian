@@ -15,18 +15,20 @@ from typing import Dict, Optional, Tuple, Union
 import re
 import gc
 
+from difflib import SequenceMatcher
+
+def _fallback_partial_ratio(a: str, b: str) -> int:
+    """Fallback fuzzy matching"""
+    if not a or not b:
+        return 0
+    return int(SequenceMatcher(None, a, b).ratio() * 100)
+
 try:
     from rapidfuzz.fuzz import partial_ratio
     HAS_RAPIDFUZZ = True
 except ImportError:
     HAS_RAPIDFUZZ = False
-    from difflib import SequenceMatcher
-    
-    def partial_ratio(a: str, b: str) -> int:
-        """Fallback fuzzy matching"""
-        if not a or not b:
-            return 0
-        return int(SequenceMatcher(None, a, b).ratio() * 100)
+    partial_ratio = _fallback_partial_ratio
 
 logger = logging.getLogger(__name__)
 

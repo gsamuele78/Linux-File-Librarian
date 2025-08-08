@@ -743,7 +743,7 @@ class LibraryBuilder:
 
                 min_size = self.config.get('min_pdf_size_bytes', 1024)
                 if 'size' in df.columns:
-                    size_mask = (pd.to_numeric(df['size'], errors='coerce').fillna(0) > min_size)
+                    size_mask = (pd.to_numeric(df['size'], errors='coerce').fillna(0) > min_size)  # type: ignore
                     df['quality_score'] += (size_mask * 1)
 
                 for _, row in df.iterrows():
@@ -936,4 +936,4 @@ class LibraryBuilder:
             print("[INFO] Try running with smaller source directories or more RAM.")
             return
 
-        unique_files = pd.DataFrame(unique_files_data, columns=[description[0] for description in cursor.description])
+        unique_files = pd.DataFrame(unique_files_data, columns=[description[0] for description in cursor.description])  # type: ignore

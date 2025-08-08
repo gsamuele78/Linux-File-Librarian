@@ -177,7 +177,7 @@ class SystemMonitor:
             issues.append(f"High disk usage: {disk:.1f}%")
         
         # Load average impact
-        cpu_count = psutil.cpu_count()
+        cpu_count = psutil.cpu_count() or 1
         if load > cpu_count * 2:
             penalty = min(25, (load - cpu_count) * 5)
             score -= penalty

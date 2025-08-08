@@ -385,15 +385,15 @@ class FileRepairStage(ProcessingStage):
         self.repair_dir = Path('repaired_files')
         self.repair_dir.mkdir(exist_ok=True)
     
-    async def process(self, files: List[Dict]) -> List[Dict]:
+    async def process(self, items: List[Dict]) -> List[Dict]:
         """Repair corrupted files"""
-        logger.info(f"Checking {len(files)} files for repair needs")
+        logger.info(f"Checking {len(items)} files for repair needs")
         
         repaired_files = []
         repair_count = 0
         
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = [executor.submit(self._repair_file, file_info) for file_info in files]
+            futures = [executor.submit(self._repair_file, file_info) for file_info in items]
             
             for future in futures:
                 try:
@@ -448,12 +448,12 @@ class EnhancedDeduplicationStage(ProcessingStage):
         from src.services.enhanced_deduplication import EnhancedDeduplicationManager
         self.dedup_manager = EnhancedDeduplicationManager()
     
-    async def process(self, files: List[Dict]) -> List[Dict]:
+    async def process(self, items: List[Dict]) -> List[Dict]:
         """Enhanced deduplication with content and metadata analysis"""
-        logger.info(f"Enhanced deduplication of {len(files)} files")
+        logger.info(f"Enhanced deduplication of {len(items)} files")
         
         try:
-            dedup_result = self.dedup_manager.deduplicate_files(files)
+            dedup_result = self.dedup_manager.deduplicate_files(items)
             
             # Export duplicate report
             report_path = Path('duplicate_analysis_report.json')
@@ -477,7 +477,7 @@ class EnhancedDeduplicationStage(ProcessingStage):
                     duplicate_paths.add(file_info['path'])
             
             # Add non-duplicate files
-            for file_info in files:
+            for file_info in items:
                 if file_info['path'] not in duplicate_paths:
                     unique_files.append(file_info)
             
@@ -499,7 +499,7 @@ class EnhancedDeduplicationStage(ProcessingStage):
         except Exception as e:
             logger.error(f"Enhanced deduplication failed: {e}")
             # Fallback to simple deduplication
-            return await self._simple_deduplication(files)
+            return await self._simple_deduplication(items)
     
     async def _simple_deduplication(self, files: List[Dict]) -> List[Dict]:
         """Fallback simple deduplication by file hash"""
@@ -547,9 +547,9 @@ class FileCopyStage(ProcessingStage):
         self.destination_root = Path(destination_root)
         self.destination_root.mkdir(parents=True, exist_ok=True)
     
-    async def process(self, files: List[Dict]) -> List[Dict]:
+    async def process(self, items: List[Dict]) -> List[Dict]:
         """Copy files to organized structure"""
-        logger.info(f"Copying {len(files)} files to library")
+        logger.info(f"Copying {len(items)} files to library")
         
         copied_files = []
         
@@ -558,8 +558,8 @@ class FileCopyStage(ProcessingStage):
         available_space = shutil.disk_usage(self.destination_root).free
         batch_size = min(100, max(10, int(available_space / (100 * 1024 * 1024))))  # Based on 100MB per file estimate
         
-        for i in range(0, len(files), batch_size):
-            batch = files[i:i + batch_size]
+        for i in range(0, len(items), batch_size):
+            batch = items[i:i + batch_size]
             
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 futures = [executor.submit(self._copy_file, file_info) 
@@ -746,11 +746,11 @@ class ProfessionalLibrarianOrchestrator:
                     )
                     
                     # Convert to pipeline metrics format
-                    metrics = ProcessingMetrics()
-                    metrics.files_processed = enterprise_result.files_processed
-                    metrics.files_failed = len(validated_files) - enterprise_result.files_processed
-                    metrics.duration = enterprise_result.processing_time
-                    metrics.throughput_files_per_second = enterprise_result.files_processed / enterprise_result.processing_time if enterprise_result.processing_time > 0 else 0
+                    metrics = ProcessingMetrics(
+                        files_processed=enterprise_result.files_processed,
+                        files_failed=len(validated_files) - enterprise_result.files_processed,
+                        end_time=time.time()
+                    )
                     
                     # Generate enterprise report
                     enterprise_report = self.enterprise_processor.generate_enterprise_report(enterprise_result)
@@ -882,7 +882,7 @@ class ProfessionalLibrarianOrchestrator:
         # Configuration recommendations
         max_workers = self.config.get('max_workers', 4)
         import psutil
-        cpu_count = psutil.cpu_count()
+        cpu_count = psutil.cpu_count() or 1
         
         if max_workers < cpu_count // 2:
             recommendations.append(

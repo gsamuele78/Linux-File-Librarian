@@ -90,7 +90,7 @@ class EnterpriseException(Exception):
 class ValidationError(EnterpriseException):
     """Validation error with field-specific context"""
     
-    def __init__(self, message: str, field: str = None, value: Any = None, **kwargs):
+    def __init__(self, message: str, field: Optional[str] = None, value: Any = None, **kwargs):
         super().__init__(message, category=ErrorCategory.VALIDATION, **kwargs)
         self.field = field
         self.value = value
@@ -112,7 +112,7 @@ class SecurityError(EnterpriseException):
 class ResourceError(EnterpriseException):
     """Resource-related error (memory, disk, network)"""
     
-    def __init__(self, message: str, resource_type: str = None, **kwargs):
+    def __init__(self, message: str, resource_type: Optional[str] = None, **kwargs):
         super().__init__(message, category=ErrorCategory.RESOURCE, **kwargs)
         self.resource_type = resource_type
 
@@ -120,7 +120,7 @@ class ResourceError(EnterpriseException):
 class ExternalServiceError(EnterpriseException):
     """External service error with retry capability"""
     
-    def __init__(self, message: str, service_name: str = None, **kwargs):
+    def __init__(self, message: str, service_name: Optional[str] = None, **kwargs):
         super().__init__(
             message,
             category=ErrorCategory.EXTERNAL_SERVICE,
@@ -152,7 +152,7 @@ class RetryStrategy(RecoveryStrategy):
         base_delay: float = 1.0,
         max_delay: float = 60.0,
         backoff_factor: float = 2.0,
-        retryable_exceptions: List[Type[Exception]] = None
+        retryable_exceptions: Optional[List[Type[Exception]]] = None
     ):
         self.max_attempts = max_attempts
         self.base_delay = base_delay
@@ -381,7 +381,7 @@ def get_error_handler() -> ErrorHandler:
 def with_error_handling(
     operation: str,
     component: str,
-    recovery_strategies: List[RecoveryStrategy] = None,
+    recovery_strategies: Optional[List[RecoveryStrategy]] = None,
     raise_on_failure: bool = True
 ):
     """Decorator for automatic error handling"""
@@ -423,9 +423,9 @@ def with_error_handling(
 def error_context(
     operation: str,
     component: str,
-    user_id: str = None,
-    session_id: str = None,
-    request_id: str = None
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None
 ):
     """Context manager for error handling"""
     context = ErrorContext(

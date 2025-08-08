@@ -178,7 +178,7 @@ class EnterpriseOptimizer:
         original_scan = library_builder.scan_files
         def optimized_scan():
             available_memory = psutil.virtual_memory().available / (1024**2)
-            chunk_size = self.resource_manager.get_optimal_chunk_size(0, available_memory)
+            chunk_size = self.resource_manager.get_optimal_chunk_size(0, int(available_memory))
             print(f"[OPTIMIZER] Using adaptive chunk size: {chunk_size}")
             return original_scan()
         

@@ -8,3 +8,4 @@ pymupdf>=1.20.0
 python-magic>=0.4.27
 rapidfuzz>=2.13.0
 lxml>=4.9.0
+setuptools>=65.5.0

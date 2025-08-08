@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 from src.providers.enhanced_classification_engine import MetadataProvider, EnhancedMetadata
 
 logger = logging.getLogger(__name__)
@@ -58,29 +59,37 @@ class PaizoProvider(MetadataProvider):
         try:
             soup = BeautifulSoup(html, 'html.parser')
             results = []
-            
+
             for item in soup.find_all('div', class_='product-item')[:5]:
+                if not isinstance(item, Tag):
+                    continue
                 title_elem = item.find('h3') or item.find('a')
-                if title_elem:
+                if isinstance(title_elem, Tag):
                     title = title_elem.get_text(strip=True)
-                    link = title_elem.get('href', '') if title_elem.name == 'a' else ''
-                    
+                    link = ""
+                    if title_elem.name == 'a':
+                        href = title_elem.get('href')
+                        if isinstance(href, str):
+                            link = href
+                        elif isinstance(href, list) and href:
+                            link = str(href[0])
+
                     results.append({
                         'title': title,
                         'link': link,
                         'id': link.split('/')[-1] if link else title.replace(' ', '-').lower()
                     })
-            
+
             return results
-            
+
         except Exception as e:
             logger.debug(f"Paizo search parsing failed: {e}")
             return []
     
-    def get_details(self, product_id: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get Paizo product details"""
         try:
-            url = f"{self.base_url}/products/{product_id}"
+            url = f"{self.base_url}/products/{provider_id}"
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
             
@@ -93,34 +102,38 @@ class PaizoProvider(MetadataProvider):
     def _parse_product_page(self, html: str) -> EnhancedMetadata:
         """Parse Paizo product page"""
         metadata = EnhancedMetadata()
-        
+
         try:
             soup = BeautifulSoup(html, 'html.parser')
-            
+
             # Title
             title_elem = soup.find('h1') or soup.find('title')
-            if title_elem:
+            if isinstance(title_elem, Tag):
                 metadata.title = title_elem.get_text(strip=True)
-            
+
             # Description
             desc_elem = soup.find('div', class_='product-description') or soup.find('meta', {'name': 'description'})
-            if desc_elem:
+            if isinstance(desc_elem, Tag):
                 if desc_elem.name == 'meta':
-                    metadata.plot = desc_elem.get('content', '')
+                    content = desc_elem.get('content', '')
+                    if isinstance(content, list):
+                        metadata.plot = ' '.join(content)
+                    else:
+                        metadata.plot = str(content)
                 else:
                     metadata.plot = desc_elem.get_text(strip=True)
-            
+
             # Publisher is always Paizo
             metadata.publisher = "Paizo Publishing"
-            
+
             # Extract game system
-            if 'pathfinder' in metadata.title.lower():
+            if metadata.title and 'pathfinder' in metadata.title.lower():
                 metadata.genres = ['Pathfinder']
-            elif 'starfinder' in metadata.title.lower():
+            elif metadata.title and 'starfinder' in metadata.title.lower():
                 metadata.genres = ['Starfinder']
             else:
                 metadata.genres = ['Paizo']
-            
+
             # Extract product type
             title_lower = metadata.title.lower() if metadata.title else ''
             if 'adventure path' in title_lower:
@@ -131,34 +144,42 @@ class PaizoProvider(MetadataProvider):
                 metadata.tags = ['Campaign Setting']
             elif 'module' in title_lower:
                 metadata.tags = ['Module']
-            
+
         except Exception as e:
             logger.debug(f"Paizo parsing failed: {e}")
-        
+
         return metadata
     
-    def get_artwork(self, product_id: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get Paizo product artwork"""
         artwork = {}
-        
+
         try:
-            url = f"{self.base_url}/products/{product_id}"
+            url = f"{self.base_url}/products/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            
+
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             # Find product image
             img_elem = soup.find('img', class_='product-image') or soup.find('img', {'alt': re.compile(r'cover', re.I)})
-            if img_elem and img_elem.get('src'):
-                img_url = img_elem['src']
-                if not img_url.startswith('http'):
-                    img_url = f"{self.base_url}{img_url}"
-                artwork['poster'] = img_url
-                
+            if isinstance(img_elem, Tag):
+                src = img_elem.get('src')
+                if src:
+                    img_url = ""
+                    if isinstance(src, str):
+                        img_url = src
+                    elif isinstance(src, list) and src:
+                        img_url = str(src[0])
+
+                    if img_url:
+                        if not img_url.startswith('http'):
+                            img_url = f"{self.base_url}{img_url}"
+                        artwork['poster'] = img_url
+
         except Exception as e:
             logger.debug(f"Paizo artwork failed: {e}")
-        
+
         return artwork
 
 
@@ -206,56 +227,65 @@ class WizardsProvider(MetadataProvider):
         try:
             soup = BeautifulSoup(html, 'html.parser')
             results = []
-            
+
             for item in soup.find_all('div', class_='search-result-item')[:5]:
+                if not isinstance(item, Tag):
+                    continue
                 title_elem = item.find('h3') or item.find('a')
-                if title_elem:
+                if isinstance(title_elem, Tag):
                     title = title_elem.get_text(strip=True)
-                    link = title_elem.get('href', '') if title_elem.name == 'a' else ''
-                    
+                    link = ""
+                    if title_elem.name == 'a':
+                        href = title_elem.get('href')
+                        if isinstance(href, str):
+                            link = href
+                        elif isinstance(href, list) and href:
+                            link = str(href[0])
+
                     results.append({
                         'title': title,
                         'link': link,
                         'id': link.split('/')[-1] if link else title.replace(' ', '-').lower()
                     })
-            
+
             return results
-            
+
         except Exception as e:
             logger.debug(f"D&D Beyond parsing failed: {e}")
             return []
     
-    def get_details(self, product_id: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get D&D product details"""
         metadata = EnhancedMetadata()
         
         # Set default D&D metadata
         metadata.publisher = "Wizards of the Coast"
         metadata.genres = ['Dungeons & Dragons']
+        metadata.tags = []
         
         # Determine edition and product type from ID/title
-        if '5e' in product_id or 'fifth' in product_id:
-            metadata.tags = ['5th Edition']
-        elif '3.5' in product_id or 'third' in product_id:
-            metadata.tags = ['3.5 Edition']
-        elif '4e' in product_id or 'fourth' in product_id:
-            metadata.tags = ['4th Edition']
+        if '5e' in provider_id or 'fifth' in provider_id:
+            metadata.tags.append('5th Edition')
+        elif '3.5' in provider_id or 'third' in provider_id:
+            metadata.tags.append('3.5 Edition')
+        elif '4e' in provider_id or 'fourth' in provider_id:
+            metadata.tags.append('4th Edition')
         
         # Product type classification
-        if 'player' in product_id and 'handbook' in product_id:
+        if 'player' in provider_id and 'handbook' in provider_id:
             metadata.tags.append('Core Rulebook')
-        elif 'monster' in product_id and 'manual' in product_id:
+        elif 'monster' in provider_id and 'manual' in provider_id:
             metadata.tags.append('Bestiary')
-        elif 'dungeon' in product_id and 'master' in product_id:
+        elif 'dungeon' in provider_id and 'master' in provider_id:
             metadata.tags.append('Core Rulebook')
-        elif 'adventure' in product_id:
+        elif 'adventure' in provider_id:
             metadata.tags.append('Adventure')
-        elif 'campaign' in product_id:
+        elif 'campaign' in provider_id:
             metadata.tags.append('Campaign Setting')
         
         return metadata
     
-    def get_artwork(self, product_id: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get D&D product artwork"""
         return {}  # D&D Beyond has complex artwork access
 
@@ -298,34 +328,41 @@ class DriveThruRPGProvider(MetadataProvider):
         try:
             soup = BeautifulSoup(html, 'html.parser')
             results = []
-            
+
             for item in soup.find_all('div', class_='product-row')[:5]:
+                if not isinstance(item, Tag):
+                    continue
                 title_elem = item.find('a', class_='product-title')
-                if title_elem:
+                if isinstance(title_elem, Tag):
                     title = title_elem.get_text(strip=True)
-                    link = title_elem.get('href', '')
-                    
+                    link_val = title_elem.get('href', '')
+                    link = ""
+                    if isinstance(link_val, str):
+                        link = link_val
+                    elif isinstance(link_val, list) and link_val:
+                        link = str(link_val[0])
+
                     # Extract product ID from link
                     product_id = ''
-                    if '/product/' in link:
+                    if link and '/product/' in link:
                         product_id = link.split('/product/')[1].split('/')[0]
-                    
+
                     results.append({
                         'title': title,
                         'link': link,
                         'id': product_id
                     })
-            
+
             return results
-            
+
         except Exception as e:
             logger.debug(f"DriveThruRPG parsing failed: {e}")
             return []
     
-    def get_details(self, product_id: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get DriveThruRPG product details"""
         try:
-            url = f"{self.base_url}/product/{product_id}"
+            url = f"{self.base_url}/product/{provider_id}"
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
             
@@ -338,62 +375,66 @@ class DriveThruRPGProvider(MetadataProvider):
     def _parse_dtrpg_product(self, html: str) -> EnhancedMetadata:
         """Parse DriveThruRPG product page"""
         metadata = EnhancedMetadata()
-        
+
         try:
             soup = BeautifulSoup(html, 'html.parser')
-            
+
             # Title
             title_elem = soup.find('h1', class_='product-title')
-            if title_elem:
+            if isinstance(title_elem, Tag):
                 metadata.title = title_elem.get_text(strip=True)
-            
+
             # Publisher
             pub_elem = soup.find('a', class_='publisher-name')
-            if pub_elem:
+            if isinstance(pub_elem, Tag):
                 metadata.publisher = pub_elem.get_text(strip=True)
-            
+
             # Description
             desc_elem = soup.find('div', class_='product-description')
-            if desc_elem:
+            if isinstance(desc_elem, Tag):
                 metadata.plot = desc_elem.get_text(strip=True)
-            
+
             # Game system from categories
             cat_elems = soup.find_all('a', class_='category-link')
-            categories = [elem.get_text(strip=True) for elem in cat_elems]
+            categories = [elem.get_text(strip=True) for elem in cat_elems if isinstance(elem, Tag)]
             metadata.genres = categories[:3]  # Top 3 categories
-            
+
             # Rating
             rating_elem = soup.find('div', class_='product-rating')
-            if rating_elem:
+            if isinstance(rating_elem, Tag):
                 rating_text = rating_elem.get_text()
                 rating_match = re.search(r'(\d+\.?\d*)', rating_text)
                 if rating_match:
                     metadata.rating = float(rating_match.group(1))
-            
+
         except Exception as e:
             logger.debug(f"DriveThruRPG parsing failed: {e}")
-        
+
         return metadata
     
-    def get_artwork(self, product_id: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get DriveThruRPG product artwork"""
         artwork = {}
-        
+
         try:
-            url = f"{self.base_url}/product/{product_id}"
+            url = f"{self.base_url}/product/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            
+
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             # Find product cover
             img_elem = soup.find('img', class_='product-image') or soup.find('img', {'alt': re.compile(r'cover', re.I)})
-            if img_elem and img_elem.get('src'):
-                artwork['poster'] = img_elem['src']
-                
+            if isinstance(img_elem, Tag):
+                src = img_elem.get('src')
+                if isinstance(src, str):
+                    artwork['poster'] = src
+                elif isinstance(src, list) and src:
+                    artwork['poster'] = str(src[0])
+
         except Exception as e:
             logger.debug(f"DriveThruRPG artwork failed: {e}")
-        
+
         return artwork
 
 
@@ -440,29 +481,37 @@ class GiochiUnitiProvider(MetadataProvider):
         try:
             soup = BeautifulSoup(html, 'html.parser')
             results = []
-            
+
             for item in soup.find_all('div', class_='product-item')[:5]:
+                if not isinstance(item, Tag):
+                    continue
                 title_elem = item.find('h3') or item.find('a')
-                if title_elem:
+                if isinstance(title_elem, Tag):
                     title = title_elem.get_text(strip=True)
-                    link = title_elem.get('href', '') if title_elem.name == 'a' else ''
-                    
+                    link = ""
+                    if title_elem.name == 'a':
+                        href = title_elem.get('href')
+                        if isinstance(href, str):
+                            link = href
+                        elif isinstance(href, list) and href:
+                            link = str(href[0])
+
                     results.append({
                         'title': title,
                         'link': link,
                         'id': link.split('/')[-1] if link else title.replace(' ', '-').lower()
                     })
-            
+
             return results
-            
+
         except Exception as e:
             logger.debug(f"Giochi Uniti parsing failed: {e}")
             return []
     
-    def get_details(self, product_id: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get Giochi Uniti product details"""
         try:
-            url = f"{self.base_url}/prodotto/{product_id}"
+            url = f"{self.base_url}/prodotto/{provider_id}"
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
             
@@ -475,59 +524,67 @@ class GiochiUnitiProvider(MetadataProvider):
     def _parse_gu_product(self, html: str) -> EnhancedMetadata:
         """Parse Giochi Uniti product page"""
         metadata = EnhancedMetadata()
-        
+
         try:
             soup = BeautifulSoup(html, 'html.parser')
-            
+
             # Title
             title_elem = soup.find('h1', class_='product-title') or soup.find('h1')
-            if title_elem:
+            if isinstance(title_elem, Tag):
                 metadata.title = title_elem.get_text(strip=True)
-            
+
             # Publisher is always Giochi Uniti
             metadata.publisher = "Giochi Uniti"
-            
+
             # Description
             desc_elem = soup.find('div', class_='product-description') or soup.find('div', class_='description')
-            if desc_elem:
+            if isinstance(desc_elem, Tag):
                 metadata.plot = desc_elem.get_text(strip=True)
-            
+
             # Extract game system
             system_elem = soup.find(text=re.compile(r'Sistema:', re.I))
-            if system_elem:
+            if system_elem and system_elem.parent:
                 system = system_elem.parent.get_text(strip=True).replace('Sistema:', '').strip()
                 metadata.genres = [system]
-            
+
             # Italian RPG tag
             metadata.tags = ['Italian RPG']
-            
+
         except Exception as e:
             logger.debug(f"Giochi Uniti parsing failed: {e}")
-        
+
         return metadata
     
-    def get_artwork(self, product_id: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get Giochi Uniti product artwork"""
         artwork = {}
-        
+
         try:
-            url = f"{self.base_url}/prodotto/{product_id}"
+            url = f"{self.base_url}/prodotto/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            
+
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             # Find product image
             img_elem = soup.find('img', class_='product-image') or soup.find('img')
-            if img_elem and img_elem.get('src'):
-                img_url = img_elem['src']
-                if not img_url.startswith('http'):
-                    img_url = f"{self.base_url}{img_url}"
-                artwork['poster'] = img_url
-                
+            if isinstance(img_elem, Tag):
+                src = img_elem.get('src')
+                if src:
+                    img_url = ""
+                    if isinstance(src, str):
+                        img_url = src
+                    elif isinstance(src, list) and src:
+                        img_url = str(src[0])
+
+                    if img_url:
+                        if not img_url.startswith('http'):
+                            img_url = f"{self.base_url}{img_url}"
+                        artwork['poster'] = img_url
+
         except Exception as e:
             logger.debug(f"Giochi Uniti artwork failed: {e}")
-        
+
         return artwork
 
 
@@ -573,29 +630,37 @@ class AcheronGamesProvider(MetadataProvider):
         try:
             soup = BeautifulSoup(html, 'html.parser')
             results = []
-            
+
             for item in soup.find_all('div', class_='product-item')[:5]:
+                if not isinstance(item, Tag):
+                    continue
                 title_elem = item.find('h3') or item.find('a')
-                if title_elem:
+                if isinstance(title_elem, Tag):
                     title = title_elem.get_text(strip=True)
-                    link = title_elem.get('href', '') if title_elem.name == 'a' else ''
-                    
+                    link = ""
+                    if title_elem.name == 'a':
+                        href = title_elem.get('href')
+                        if isinstance(href, str):
+                            link = href
+                        elif isinstance(href, list) and href:
+                            link = str(href[0])
+
                     results.append({
                         'title': title,
                         'link': link,
                         'id': link.split('/')[-1] if link else title.replace(' ', '-').lower()
                     })
-            
+
             return results
-            
+
         except Exception as e:
             logger.debug(f"Acheron Games parsing failed: {e}")
             return []
     
-    def get_details(self, product_id: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get Acheron Games product details"""
         try:
-            url = f"{self.base_url}/prodotto/{product_id}"
+            url = f"{self.base_url}/prodotto/{provider_id}"
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
             
@@ -608,58 +673,66 @@ class AcheronGamesProvider(MetadataProvider):
     def _parse_acheron_product(self, html: str) -> EnhancedMetadata:
         """Parse Acheron Games product page"""
         metadata = EnhancedMetadata()
-        
+
         try:
             soup = BeautifulSoup(html, 'html.parser')
-            
+
             # Title
             title_elem = soup.find('h1', class_='product-title') or soup.find('h1')
-            if title_elem:
+            if isinstance(title_elem, Tag):
                 metadata.title = title_elem.get_text(strip=True)
-            
+
             # Publisher is always Acheron Games
             metadata.publisher = "Acheron Games"
-            
+
             # Description
             desc_elem = soup.find('div', class_='product-description') or soup.find('div', class_='description')
-            if desc_elem:
+            if isinstance(desc_elem, Tag):
                 metadata.plot = desc_elem.get_text(strip=True)
-            
+
             # Extract game system
             system_elem = soup.find(text=re.compile(r'Sistema?:', re.I))
-            if system_elem:
+            if system_elem and system_elem.parent:
                 system = system_elem.parent.get_text(strip=True)
                 system = re.sub(r'Sistema?:', '', system, flags=re.I).strip()
                 metadata.genres = [system]
-            
+
             # Italian RPG tag
             metadata.tags = ['Italian RPG']
-            
+
         except Exception as e:
             logger.debug(f"Acheron Games parsing failed: {e}")
-        
+
         return metadata
     
-    def get_artwork(self, product_id: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get Acheron Games product artwork"""
         artwork = {}
-        
+
         try:
-            url = f"{self.base_url}/prodotto/{product_id}"
+            url = f"{self.base_url}/prodotto/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            
+
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             # Find product image
             img_elem = soup.find('img', class_='product-image') or soup.find('img')
-            if img_elem and img_elem.get('src'):
-                img_url = img_elem['src']
-                if not img_url.startswith('http'):
-                    img_url = f"{self.base_url}{img_url}"
-                artwork['poster'] = img_url
-                
+            if isinstance(img_elem, Tag):
+                src = img_elem.get('src')
+                if src:
+                    img_url = ""
+                    if isinstance(src, str):
+                        img_url = src
+                    elif isinstance(src, list) and src:
+                        img_url = str(src[0])
+
+                    if img_url:
+                        if not img_url.startswith('http'):
+                            img_url = f"{self.base_url}{img_url}"
+                        artwork['poster'] = img_url
+
         except Exception as e:
             logger.debug(f"Acheron Games artwork failed: {e}")
-        
+
         return artwork

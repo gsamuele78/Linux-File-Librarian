@@ -9,6 +9,8 @@ with intelligent error detection and recovery strategies.
 import logging
 import shutil
 import subprocess
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -297,7 +299,6 @@ class ArchiveRepairer(DocumentRepairer):
         """Diagnose ZIP file"""
         issues = []
         try:
-            import zipfile
             with zipfile.ZipFile(file_path, 'r') as zf:
                 bad_files = zf.testzip()
                 if bad_files:
@@ -359,9 +360,6 @@ class ArchiveRepairer(DocumentRepairer):
     def _try_extract_recompress(self, file_path: Path, output_dir: Path) -> bool:
         """Try extracting and recompressing archive"""
         try:
-            import tempfile
-            import zipfile
-            
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
                 

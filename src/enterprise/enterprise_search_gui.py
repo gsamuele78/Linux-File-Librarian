@@ -19,7 +19,7 @@ import time
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from subprocess import run, CalledProcessError, DEVNULL
@@ -49,12 +49,8 @@ class SearchResult:
     size_bytes: int
     path: str
     language: str = ""
-    tags: List[str] = None
+    tags: List[str] = field(default_factory=list)
     last_modified: float = 0.0
-    
-    def __post_init__(self):
-        if self.tags is None:
-            self.tags = []
 
 
 @dataclass
@@ -66,13 +62,9 @@ class SearchCriteria:
     language: str = ""
     min_size_kb: int = 0
     max_size_kb: int = 0
-    tags: List[str] = None
+    tags: List[str] = field(default_factory=list)
     date_from: str = ""
     date_to: str = ""
-    
-    def __post_init__(self):
-        if self.tags is None:
-            self.tags = []
 
 
 class SearchDatabase:
@@ -226,6 +218,7 @@ class ExportDialog(EnterpriseDialog):
         self.export_format = tk.StringVar(value="csv")
         self.include_headers = tk.BooleanVar(value=True)
         self.export_path = tk.StringVar()
+        self.export_data: Optional[Dict[str, Any]] = None
         
         super().__init__(parent, "Export Search Results", theme_manager, modal=True)
     
@@ -304,11 +297,12 @@ class ExportDialog(EnterpriseDialog):
             messagebox.showerror("Error", "Please select an output file")
             return
         
-        self.result = {
+        self.export_data = {
             'format': self.export_format.get(),
             'path': self.export_path.get(),
             'include_headers': self.include_headers.get()
         }
+        self.result = True
         self.destroy()
 
 
@@ -463,7 +457,7 @@ class EnterpriseSearchApplication(EnterpriseApplication):
         self.bind_all("<Control-q>", lambda e: self.on_closing())
         self.bind_all("<F5>", lambda e: self.refresh_data())
     
-    def create_search_panel(self, parent) -> ttk.Frame:
+    def create_search_panel(self, parent) -> ttk.LabelFrame:
         """Create search criteria panel"""
         panel = ttk.LabelFrame(parent, text="Search Criteria")
         
@@ -473,33 +467,37 @@ class EnterpriseSearchApplication(EnterpriseApplication):
         
         # Filename search
         ttk.Label(filters_frame1, text="Filename:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
-        self.filename_entry = EnterpriseEntry(filters_frame1, self.theme_manager, 
+        self.filename_entry = EnterpriseEntry(filters_frame1, self.theme_manager,
                                             placeholder="Enter filename to search...", width=30)
-        self.filename_entry.widget.grid(row=0, column=1, sticky=tk.EW, padx=(0, 10))
-        
+        if self.filename_entry.widget:
+            self.filename_entry.widget.grid(row=0, column=1, sticky=tk.EW, padx=(0, 10))
+
         # Game system filter
         ttk.Label(filters_frame1, text="Game System:").grid(row=0, column=2, sticky=tk.W, padx=(0, 5))
         self.game_system_combo = EnterpriseCombobox(filters_frame1, self.theme_manager, width=25)
-        self.game_system_combo.widget.grid(row=0, column=3, sticky=tk.EW, padx=(0, 10))
-        
+        if self.game_system_combo.widget:
+            self.game_system_combo.widget.grid(row=0, column=3, sticky=tk.EW, padx=(0, 10))
+
         # File type filter
         ttk.Label(filters_frame1, text="File Type:").grid(row=0, column=4, sticky=tk.W, padx=(0, 5))
         self.file_type_combo = EnterpriseCombobox(filters_frame1, self.theme_manager, width=20)
-        self.file_type_combo.widget.grid(row=0, column=5, sticky=tk.EW)
-        
+        if self.file_type_combo.widget:
+            self.file_type_combo.widget.grid(row=0, column=5, sticky=tk.EW)
+
         # Configure grid weights
         filters_frame1.grid_columnconfigure(1, weight=1)
         filters_frame1.grid_columnconfigure(3, weight=1)
         filters_frame1.grid_columnconfigure(5, weight=1)
-        
+
         # Filters row 2
         filters_frame2 = ttk.Frame(panel)
         filters_frame2.pack(fill=tk.X, padx=10, pady=5)
-        
+
         # Language filter
         ttk.Label(filters_frame2, text="Language:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
         self.language_combo = EnterpriseCombobox(filters_frame2, self.theme_manager, width=15)
-        self.language_combo.widget.grid(row=0, column=1, sticky=tk.EW, padx=(0, 10))
+        if self.language_combo.widget:
+            self.language_combo.widget.grid(row=0, column=1, sticky=tk.EW, padx=(0, 10))
         
         # Size filters
         ttk.Label(filters_frame2, text="Size (KB):").grid(row=0, column=2, sticky=tk.W, padx=(0, 5))
@@ -507,10 +505,12 @@ class EnterpriseSearchApplication(EnterpriseApplication):
         size_frame.grid(row=0, column=3, sticky=tk.EW, padx=(0, 10))
         
         self.min_size_entry = EnterpriseEntry(size_frame, self.theme_manager, placeholder="Min", width=8)
-        self.min_size_entry.widget.pack(side=tk.LEFT, padx=(0, 5))
+        if self.min_size_entry.widget:
+            self.min_size_entry.widget.pack(side=tk.LEFT, padx=(0, 5))
         ttk.Label(size_frame, text="to").pack(side=tk.LEFT, padx=5)
         self.max_size_entry = EnterpriseEntry(size_frame, self.theme_manager, placeholder="Max", width=8)
-        self.max_size_entry.widget.pack(side=tk.LEFT, padx=(5, 0))
+        if self.max_size_entry.widget:
+            self.max_size_entry.widget.pack(side=tk.LEFT, padx=(5, 0))
         
         # Search buttons
         btn_frame = ttk.Frame(filters_frame2)
@@ -527,11 +527,12 @@ class EnterpriseSearchApplication(EnterpriseApplication):
         filters_frame2.grid_columnconfigure(3, weight=1)
         
         # Bind Enter key to search
-        self.filename_entry.widget.bind("<Return>", lambda e: self.perform_search())
+        if self.filename_entry.widget:
+            self.filename_entry.widget.bind("<Return>", lambda e: self.perform_search())
         
         return panel
     
-    def create_results_panel(self, parent) -> ttk.Frame:
+    def create_results_panel(self, parent) -> ttk.LabelFrame:
         """Create results display panel"""
         panel = ttk.LabelFrame(parent, text="Search Results")
         
@@ -540,7 +541,8 @@ class EnterpriseSearchApplication(EnterpriseApplication):
         headings = ["Filename", "Game System", "File Type", "Size (KB)", "Language", "Full Path"]
         
         self.results_tree = EnterpriseTreeview(panel, self.theme_manager, columns, headings)
-        self.results_tree.widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        if self.results_tree.widget:
+            self.results_tree.widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Configure column widths
         tree = self.results_tree.tree
@@ -782,8 +784,12 @@ class EnterpriseSearchApplication(EnterpriseApplication):
         
         # Show export dialog
         dialog = ExportDialog(self, self.theme_manager, len(self.current_results))
-        export_options = dialog.show()
-        
+        dialog_result = dialog.show()
+
+        if not dialog_result:
+            return
+
+        export_options = dialog.export_data
         if not export_options:
             return
         
@@ -792,7 +798,9 @@ class EnterpriseSearchApplication(EnterpriseApplication):
             
             def export_task():
                 self._export_results_to_file(export_options)
-                return export_options['path']
+                if 'path' in export_options:
+                    return export_options['path']
+                return ""
             
             def on_success(file_path):
                 self.set_status(f"Results exported to: {Path(file_path).name}")

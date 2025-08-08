@@ -33,15 +33,15 @@ class EnhancedMetadata:
     # Content details
     plot: Optional[str] = None
     tagline: Optional[str] = None
-    genres: List[str] = None
-    tags: List[str] = None
+    genres: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
     rating: Optional[float] = None
     votes: Optional[int] = None
     
     # People
     director: Optional[str] = None
-    writers: List[str] = None
-    actors: List[str] = None
+    writers: Optional[List[str]] = None
+    actors: Optional[List[str]] = None
     author: Optional[str] = None
     publisher: Optional[str] = None
     
@@ -51,6 +51,7 @@ class EnhancedMetadata:
     audio_codec: Optional[str] = None
     video_codec: Optional[str] = None
     file_size: Optional[int] = None
+    pages: Optional[int] = None
     
     # Artwork URLs
     poster_url: Optional[str] = None

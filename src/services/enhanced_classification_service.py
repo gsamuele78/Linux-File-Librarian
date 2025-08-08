@@ -25,7 +25,7 @@ class LegacyClassificationResult:
     category: str
     confidence: float
     source: str
-    metadata: Dict = None
+    metadata: Optional[Dict] = None
 
 
 class EnhancedClassificationService:

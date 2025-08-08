@@ -50,10 +50,10 @@ class CrossRefProvider(MetadataProvider):
             logger.debug(f"CrossRef search failed: {e}")
             return []
     
-    def get_details(self, doi: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get paper details by DOI"""
         try:
-            url = f"{self.base_url}/works/{doi}"
+            url = f"{self.base_url}/works/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
@@ -156,11 +156,11 @@ class ArxivProvider(MetadataProvider):
             logger.debug(f"arXiv search failed: {e}")
             return []
     
-    def get_details(self, arxiv_id: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get arXiv paper details"""
         try:
             params = {
-                'id_list': arxiv_id,
+                'id_list': provider_id,
                 'max_results': 1
             }
             
@@ -172,23 +172,23 @@ class ArxivProvider(MetadataProvider):
             
             entry = root.find('{http://www.w3.org/2005/Atom}entry')
             if entry is not None:
-                return self._parse_arxiv_entry(entry, detailed=True)
+                return self._parse_arxiv_entry_details(entry)
             
         except Exception as e:
             logger.debug(f"arXiv details failed: {e}")
         
         return None
     
-    def _parse_arxiv_entry(self, entry, detailed=False) -> Dict:
-        """Parse arXiv XML entry"""
+    def _parse_arxiv_entry(self, entry) -> Dict:
+        """Parse arXiv XML entry for search results"""
         ns = {'atom': 'http://www.w3.org/2005/Atom', 'arxiv': 'http://arxiv.org/schemas/atom'}
         
         data = {}
         
         # ID
         id_elem = entry.find('atom:id', ns)
-        if id_elem is not None:
-            data['id'] = id_elem.text.split('/')[-1]  # Extract arXiv ID
+        if id_elem is not None and id_elem.text is not None:
+            data['id'] = id_elem.text.split('/')[-1]
         
         # Title
         title_elem = entry.find('atom:title', ns)
@@ -220,11 +220,13 @@ class ArxivProvider(MetadataProvider):
         published_elem = entry.find('atom:published', ns)
         if published_elem is not None:
             data['published'] = published_elem.text
-        
-        if detailed:
-            return self._convert_to_metadata(data)
-        
+
         return data
+
+    def _parse_arxiv_entry_details(self, entry) -> EnhancedMetadata:
+        """Parse arXiv XML entry for detailed metadata"""
+        data = self._parse_arxiv_entry(entry)
+        return self._convert_to_metadata(data)
     
     def _convert_to_metadata(self, data: Dict) -> EnhancedMetadata:
         """Convert arXiv data to EnhancedMetadata"""
@@ -288,10 +290,10 @@ class GoogleBooksProvider(MetadataProvider):
             logger.debug(f"Google Books search failed: {e}")
             return []
     
-    def get_details(self, volume_id: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get book details from Google Books"""
         try:
-            url = f"{self.base_url}/volumes/{volume_id}"
+            url = f"{self.base_url}/volumes/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
@@ -346,12 +348,12 @@ class GoogleBooksProvider(MetadataProvider):
         
         return metadata
     
-    def get_artwork(self, volume_id: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get book cover from Google Books"""
         artwork = {}
         
         try:
-            url = f"{self.base_url}/volumes/{volume_id}"
+            url = f"{self.base_url}/volumes/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
@@ -397,11 +399,11 @@ class WikipediaProvider(MetadataProvider):
             logger.debug(f"Wikipedia search failed: {e}")
             return []
     
-    def get_details(self, page_title: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get Wikipedia page details"""
         try:
             # Get page summary
-            url = f"{self.base_url}/page/summary/{page_title}"
+            url = f"{self.base_url}/page/summary/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
@@ -427,12 +429,12 @@ class WikipediaProvider(MetadataProvider):
         
         return metadata
     
-    def get_artwork(self, page_title: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get Wikipedia page image"""
         artwork = {}
         
         try:
-            url = f"{self.base_url}/page/summary/{page_title}"
+            url = f"{self.base_url}/page/summary/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
@@ -482,10 +484,10 @@ class InternetArchiveProvider(MetadataProvider):
             logger.debug(f"Internet Archive search failed: {e}")
             return []
     
-    def get_details(self, identifier: str, media_type: str) -> Optional[EnhancedMetadata]:
+    def get_details(self, provider_id: str, media_type: str) -> Optional[EnhancedMetadata]:
         """Get Internet Archive item details"""
         try:
-            url = f"{self.base_url}/metadata/{identifier}"
+            url = f"{self.base_url}/metadata/{provider_id}"
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
@@ -533,13 +535,13 @@ class InternetArchiveProvider(MetadataProvider):
         
         return metadata
     
-    def get_artwork(self, identifier: str, media_type: str) -> Dict[str, str]:
+    def get_artwork(self, provider_id: str, media_type: str) -> Dict[str, str]:
         """Get Internet Archive item thumbnail"""
         artwork = {}
         
         try:
             # Internet Archive thumbnail URL pattern
-            thumb_url = f"{self.base_url}/services/img/{identifier}"
+            thumb_url = f"{self.base_url}/services/img/{provider_id}"
             
             # Check if thumbnail exists
             response = self.session.head(thumb_url, timeout=5)

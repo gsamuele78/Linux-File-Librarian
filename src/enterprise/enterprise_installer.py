@@ -17,7 +17,7 @@ import hashlib
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from enum import Enum
 from contextlib import contextmanager
 import time
@@ -45,36 +45,32 @@ class SystemType(Enum):
     UNKNOWN = "unknown"
 
 
+def _default_system_packages():
+    return {
+        'debian_ubuntu': ['python3-pip', 'python3-tk', 'python3-venv', 'python3-dev',
+                        'git', 'libmagic1', 'qpdf', 'ghostscript', 'pdftk'],
+        'redhat_centos': ['python3-pip', 'python3-tkinter', 'python3-venv', 'python3-devel',
+                        'git', 'file-libs', 'qpdf', 'ghostscript', 'pdftk'],
+        'fedora': ['python3-pip', 'python3-tkinter', 'python3-venv', 'python3-devel',
+                  'git', 'file-libs', 'qpdf', 'ghostscript', 'pdftk']
+    }
+
+def _default_python_packages():
+    return [
+        'pandas>=1.3.0', 'beautifulsoup4>=4.9.0', 'requests>=2.25.0',
+        'tqdm>=4.60.0', 'psutil>=5.8.0', 'pymupdf>=1.18.0',
+        'python-magic>=0.4.0', 'rapidfuzz>=1.4.0', 'lxml>=4.6.0'
+    ]
+
 @dataclass
 class SystemRequirements:
     """System requirements specification"""
     min_python_version: Tuple[int, int] = (3, 8)
     min_memory_gb: float = 2.0
     min_disk_space_gb: float = 5.0
-    required_commands: List[str] = None
-    system_packages: Dict[str, List[str]] = None
-    python_packages: List[str] = None
-
-    def __post_init__(self):
-        if self.required_commands is None:
-            self.required_commands = ['python3', 'pip3', 'git']
-        
-        if self.system_packages is None:
-            self.system_packages = {
-                'debian_ubuntu': ['python3-pip', 'python3-tk', 'python3-venv', 'python3-dev', 
-                                'git', 'libmagic1', 'qpdf', 'ghostscript', 'pdftk'],
-                'redhat_centos': ['python3-pip', 'python3-tkinter', 'python3-venv', 'python3-devel',
-                                'git', 'file-libs', 'qpdf', 'ghostscript', 'pdftk'],
-                'fedora': ['python3-pip', 'python3-tkinter', 'python3-venv', 'python3-devel',
-                          'git', 'file-libs', 'qpdf', 'ghostscript', 'pdftk']
-            }
-        
-        if self.python_packages is None:
-            self.python_packages = [
-                'pandas>=1.3.0', 'beautifulsoup4>=4.9.0', 'requests>=2.25.0',
-                'tqdm>=4.60.0', 'psutil>=5.8.0', 'pymupdf>=1.18.0',
-                'python-magic>=0.4.0', 'rapidfuzz>=1.4.0', 'lxml>=4.6.0'
-            ]
+    required_commands: List[str] = field(default_factory=lambda: ['python3', 'pip3', 'git'])
+    system_packages: Dict[str, List[str]] = field(default_factory=_default_system_packages)
+    python_packages: List[str] = field(default_factory=_default_python_packages)
 
 
 @dataclass
@@ -179,6 +175,7 @@ class PackageManager:
     
     def _run_command(self, cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
         """Run system command with proper error handling"""
+        safe_cmd = ""
         try:
             safe_cmd = ' '.join(str(c)[:50] for c in cmd[:5])
             logger.info(f"Executing: {safe_cmd}")

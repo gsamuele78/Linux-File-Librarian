@@ -21,8 +21,8 @@ from src.core.classifier import Classifier
 from src.core.library_builder import LibraryBuilder
 
 # Enterprise services
-from src.enterprise.enterprise_integration import EnterpriseProcessor
-from src.enterprise.professional_orchestrator import ProfessionalOrchestrator
+from src.enterprise.enterprise_integration import EnterpriseFileProcessor
+from src.enterprise.professional_orchestrator import ProfessionalLibrarianOrchestrator
 from src.enterprise.enterprise_config_manager import EnterpriseConfigManager
 
 # Interfaces
@@ -48,8 +48,8 @@ __all__ = [
     "LibraryBuilder",
     
     # Enterprise classes
-    "EnterpriseProcessor",
-    "ProfessionalOrchestrator",
+    "EnterpriseFileProcessor",
+    "ProfessionalLibrarianOrchestrator",
     "EnterpriseConfigManager",
     
     # Interfaces

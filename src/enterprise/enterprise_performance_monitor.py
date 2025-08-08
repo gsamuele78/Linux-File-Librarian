@@ -54,7 +54,7 @@ class OperationMetrics:
     error_message: Optional[str] = None
     custom_metrics: Dict[str, Any] = field(default_factory=dict)
     
-    def complete(self, success: bool = True, error_message: str = None):
+    def complete(self, success: bool = True, error_message: Optional[str] = None):
         """Mark operation as complete"""
         self.end_time = time.time()
         self.duration_ms = (self.end_time - self.start_time) * 1000
@@ -346,10 +346,12 @@ class PerformanceAnalyzer:
         
         if slow_operations:
             slowest = max(slow_operations, key=lambda x: x.duration_ms or 0)
-            recommendations.append(
-                f"Slow operations detected. Slowest: '{slowest.operation_name}' "
-                f"took {slowest.duration_ms/1000:.2f}s. Consider optimization or parallelization."
-            )
+            if slowest.duration_ms is not None:
+                duration_s = slowest.duration_ms / 1000
+                recommendations.append(
+                    f"Slow operations detected. Slowest: '{slowest.operation_name}' "
+                    f"took {duration_s:.2f}s. Consider optimization or parallelization."
+                )
         
         # Find memory-intensive operations
         memory_intensive = [op for op in operations if (op.memory_end_mb - op.memory_start_mb) > self.thresholds['operation_memory_high']]
@@ -459,11 +461,13 @@ class EnterprisePerformanceMonitor:
         if operation_metrics:
             completed_ops = [op for op in operation_metrics if op.duration_ms is not None]
             if completed_ops:
-                summary.update({
-                    'avg_operation_duration_ms': sum(op.duration_ms for op in completed_ops) / len(completed_ops),
-                    'slowest_operation_ms': max(op.duration_ms for op in completed_ops),
-                    'total_operations_time_seconds': sum(op.duration_ms for op in completed_ops) / 1000
-                })
+                durations = [op.duration_ms for op in completed_ops if op.duration_ms is not None]
+                if durations:
+                    summary.update({
+                        'avg_operation_duration_ms': sum(durations) / len(durations),
+                        'slowest_operation_ms': max(durations),
+                        'total_operations_time_seconds': sum(durations) / 1000
+                    })
         
         return summary
     

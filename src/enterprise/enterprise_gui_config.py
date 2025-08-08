@@ -9,8 +9,8 @@ themes, accessibility settings, and user preferences.
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, asdict
+from typing import Dict, Any, Optional, List, Union
+from dataclasses import dataclass, asdict, field
 from enum import Enum
 import tkinter as tk
 from tkinter import ttk, messagebox, colorchooser, font
@@ -47,11 +47,7 @@ class GUIPreferences:
     export_format: str = "csv"
     max_search_results: int = 1000
     search_history_size: int = 50
-    recent_searches: List[str] = None
-    
-    def __post_init__(self):
-        if self.recent_searches is None:
-            self.recent_searches = []
+    recent_searches: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -185,7 +181,7 @@ class EnterpriseGUIConfigManager:
             logger.error(f"Failed to save custom theme '{name}': {e}")
             raise
     
-    def get_theme_colors(self, theme_name: str = None) -> ThemeColors:
+    def get_theme_colors(self, theme_name: Optional[str] = None) -> ThemeColors:
         """Get theme colors"""
         if not theme_name:
             theme_name = self.preferences.theme
@@ -300,7 +296,7 @@ class EnterpriseGUIConfigManager:
 class GUIConfigurationDialog(tk.Toplevel):
     """GUI configuration dialog"""
     
-    def __init__(self, parent: tk.Widget, config_manager: EnterpriseGUIConfigManager):
+    def __init__(self, parent: Union[tk.Tk, tk.Toplevel], config_manager: EnterpriseGUIConfigManager):
         super().__init__(parent)
         
         self.parent = parent

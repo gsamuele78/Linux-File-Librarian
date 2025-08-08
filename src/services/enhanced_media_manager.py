@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from mutagen._file import File as MutagenFile
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +309,6 @@ class AudioDetector(MediaDetector):
         try:
             # Try mutagen for audio metadata
             try:
-                from mutagen import File as MutagenFile
                 audio_file = MutagenFile(file_path)
                 
                 if audio_file:
@@ -399,7 +399,7 @@ class ImageDetector(MediaDetector):
                     metadata.format_info = img.format
                     
                     # Extract EXIF data
-                    exif_data = img._getexif()
+                    exif_data = img.getexif()
                     if exif_data:
                         for tag_id, value in exif_data.items():
                             tag = TAGS.get(tag_id, tag_id)
@@ -474,7 +474,7 @@ class DocumentDetector(MediaDetector):
             if file_path.suffix.lower() in ['.docx']:
                 try:
                     from docx import Document
-                    doc = Document(file_path)
+                    doc = Document(str(file_path))
                     
                     # Extract core properties
                     props = doc.core_properties

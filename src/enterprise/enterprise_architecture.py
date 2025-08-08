@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Union, AsyncGenerator
 from queue import Queue, Empty
 import psutil
 import gc
@@ -202,13 +202,14 @@ class ProcessingPipeline:
         """Add processing stage"""
         self.stages.append(stage)
     
-    async def process(self, items: List[Any]) -> ProcessingMetrics:
-        """Process items through pipeline"""
+    async def process_async(self, items: List[Any]) -> AsyncGenerator[List[Any], None]:
+        """Process items through pipeline, yielding results after each stage."""
         self.metrics = ProcessingMetrics()
         
         try:
             for stage in self.stages:
                 items = await self._process_stage(stage, items)
+                yield items
                 
                 # Memory pressure check
                 if psutil.virtual_memory().percent > 85:
@@ -229,8 +230,6 @@ class ProcessingPipeline:
                 'metrics': self.metrics
             })
             raise
-        
-        return self.metrics
     
     async def _process_stage(self, stage: 'ProcessingStage', items: List[Any]) -> List[Any]:
         """Process single stage"""
